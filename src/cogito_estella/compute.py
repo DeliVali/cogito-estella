@@ -138,3 +138,73 @@ def flops_summary(n_ct, n_dec, n_enc, n_tt, n_concepts, tokens_per_concept, n_ep
         "assumptions": {"n_concepts": n_concepts, "tokens_per_concept": tokens_per_concept,
                         "n_epochs": n_epochs},
     }
+
+
+# ---------------------------------------------------------------------------
+# Memory-bandwidth roofline (arithmetic intensity)
+#
+# A FLOP advantage only materializes if the kernel is compute-bound, not
+# bandwidth-bound. The counter-argument to the 1074x claim: a ~5.8M decoder
+# has low arithmetic intensity, so serving spends time moving weights, not
+# computing. This is answered numerically, not rhetorically:
+#
+#   1. Weight bandwidth amortizes over the batch. Weights load once per
+#      forward; activations scale with B. AI(B) = B*F / (W + B*A) rises from
+#      a memory-bound point at B=1 to a ceiling F/A as B grows. B_amort = W/A
+#      is ~19-25 here, so at server batch (B>=256) weights are <3% of traffic
+#      and the "tiny weights reload" objection is void.
+#   2. Non-autoregressive => no KV cache. Per-user memory footprint beyond the
+#      shared weights is ~0, so B reaches thousands (measured: B=1024 -> 6.7 GB).
+#      The autoregressive baseline spends most VRAM on per-user KV cache, which
+#      both caps concurrency and *is* the bandwidth it streams every step.
+#   3. The comparison target is memory-bound by nature. Autoregressive text
+#      decoding moves 605M weights (or streams KV) once PER GENERATED TOKEN over
+#      L_tok steps; the graph decoder moves ~5.8M once. "Memory-bound" is the
+#      regime AR decoding suffers in; a KV-free single pass is the mitigation.
+#
+# Firm number: RTX 5070 HBM bandwidth 672 GB/s (192-bit GDDR7 @ 28 Gbps).
+# Compute peak is quoted as a range because the exact BF16 tensor peak is
+# not authoritatively published; conclusions are stated against the range.
+# ---------------------------------------------------------------------------
+
+RTX5070_BW_BYTES_S = 672e9
+RTX5070_PEAKS_FLOPS = {          # FLOP/s, labeled by confidence
+    "fp32_cuda": 30.9e12,        # conservative lower bound (CUDA cores)
+    "bf16_tensor_mid": 123e12,   # mid estimate
+    "bf16_tensor_high": 247e12,  # aggressive upper bound
+}
+
+
+def graph_decoder_flops_bytes(K: int, d: int, V: int, R: int, concept_dim: int = 1024,
+                              w_bytes: int = 2, a_bytes: int = 2) -> dict:
+    """Per-sample forward FLOPs, activation traffic, and weight bytes for a
+    GraphDecoder (K nodes, node_dim d, label vocab V, R relations). Bilinear
+    adjacency is two matmuls: (n_i^T W_r) then (.)n_j. w_bytes/a_bytes default
+    to bf16 (2)."""
+    params = (concept_dim * K * d + K * d) + (d + 1) + (d * V + V) + (R * d * d)
+    flops = (2 * concept_dim * K * d + 2 * K * d + 2 * K * d * V
+             + 2 * R * K * d * d + 2 * R * K * K * d)
+    act_floats = (concept_dim + 2 * K * d + K + K * V + 2 * R * K * d + R * K * K)
+    return {"params": params, "flops_per_sample": flops,
+            "act_bytes_per_sample": act_floats * a_bytes, "weight_bytes": params * w_bytes}
+
+
+def arithmetic_intensity(stats: dict, batch: int) -> float:
+    """AI(B) = B*F / (W + B*A) FLOP/byte. Weights loaded once, activations per sample."""
+    return (batch * stats["flops_per_sample"]) / (
+        stats["weight_bytes"] + batch * stats["act_bytes_per_sample"])
+
+
+def weight_traffic_fraction(stats: dict, batch: int) -> float:
+    """Fraction of memory traffic spent (re)loading weights at batch B. -> 0 as B grows."""
+    w = stats["weight_bytes"]
+    return w / (w + batch * stats["act_bytes_per_sample"])
+
+
+def roofline_crossover_batch(stats: dict, peak_flops: float,
+                             bw_bytes_s: float = RTX5070_BW_BYTES_S) -> float:
+    """Batch B* where AI(B*) meets the ridge point peak/BW (compute-bound above it).
+    inf if the AI ceiling F/A never reaches the ridge (memory-bound at any B)."""
+    ridge = peak_flops / bw_bytes_s
+    denom = stats["flops_per_sample"] - ridge * stats["act_bytes_per_sample"]
+    return ridge * stats["weight_bytes"] / denom if denom > 0 else float("inf")

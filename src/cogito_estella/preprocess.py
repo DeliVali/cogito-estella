@@ -75,6 +75,12 @@ _SECRET_PATTERNS = [
 ]
 _DIGIT_RUN = re.compile(r"\d+")
 
+# Roundtrip audit (2026-08-26, n=4/lang): spacing preserves the sentence body in every
+# tested script, but spaced digit runs drift in these languages (separator mutation /
+# run merging). Conservative gate until measured at scale; plain digits still recover
+# ~0.956 via digit-nodes (exp016), so skipping the trick is a mild, safe fallback.
+SPACING_UNSAFE_LANGS = {"jpn_Jpan", "rus_Cyrl"}
+
 
 def anonymize_secrets(text: str) -> str:
     text = _EMAIL.sub("<EMAIL>", text)
@@ -83,9 +89,12 @@ def anonymize_secrets(text: str) -> str:
     return text
 
 
-def space_digits(text: str, min_run: int = 1) -> str:
+def space_digits(text: str, min_run: int = 1, lang: str | None = None) -> str:
     """Validated trick (exp016): '400' -> '4 0 0' so SONAR sees isolated digits.
-    min_run limits to runs of length >= min_run (e.g. 5 = only long IDs/numbers)."""
+    min_run limits to runs of length >= min_run (e.g. 5 = only long IDs/numbers).
+    lang gates the trick off for scripts where spaced runs drift (SPACING_UNSAFE_LANGS)."""
+    if lang in SPACING_UNSAFE_LANGS:
+        return text
     return _DIGIT_RUN.sub(lambda m: " ".join(m.group()) if len(m.group()) >= min_run else m.group(), text)
 
 
@@ -137,5 +146,5 @@ def preprocess_record(rec, space_code_digits: bool = True):
         if cleaned is None:
             return None
         text = anonymize_secrets(cleaned)
-        text = space_digits(text, min_run=5)  # only long IDs/numbers SONAR loses
+        text = space_digits(text, min_run=5, lang=rec.sonar_lang)  # only long IDs/numbers SONAR loses
     return DocRecord(text, rec.sonar_lang, rec.source, rec.modality)

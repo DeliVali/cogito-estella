@@ -23,11 +23,18 @@ class SonarCodec:
             device=self.device,
         )
 
+    def encode(self, texts: list[str], lang: str, batch_size: int = 32):
+        """Texto -> embeddings SONAR. Devuelve un tensor [N, 1024]."""
+        return self._enc.predict(texts, source_lang=lang, batch_size=batch_size)
+
+    def decode(self, embeddings, lang: str, batch_size: int = 32) -> list[str]:
+        """Embeddings SONAR -> texto."""
+        return self._dec.predict(embeddings, target_lang=lang, batch_size=batch_size, max_seq_len=512)
+
     def roundtrip(self, texts: list[str], lang: str, batch_size: int = 32) -> list[str]:
         out: list[str] = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
-            emb = self._enc.predict(batch, source_lang=lang, batch_size=batch_size)
-            dec = self._dec.predict(emb, target_lang=lang, batch_size=batch_size, max_seq_len=512)
-            out.extend(dec)
+            emb = self.encode(batch, lang, batch_size)
+            out.extend(self.decode(emb, lang, batch_size))
         return out

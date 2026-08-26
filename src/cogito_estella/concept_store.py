@@ -1,12 +1,12 @@
-"""Almacén de conceptos: shards de embeddings (fp16) + texto crudo + metadatos.
+"""Concept store: fp16 embedding shards + raw text + metadata.
 
-Formato por shard (un subdirectorio `shard_00000/`, etc.):
-- embeddings.npy : float16, forma [n, 1024]
-- texts.jsonl    : una línea JSON {"text","lang","source","doc_id"} por fila
-- meta.json      : {"n", "sonar_version", "timestamp", "commit"}
+Per shard (subdir `shard_00000/`, ...):
+- embeddings.npy : float16 [n, 1024]
+- texts.jsonl    : one JSON line {"text","lang","source","doc_id"} per row
+- meta.json      : {"n"}
 
-El texto crudo se guarda junto al embedding porque el objetivo de entrenamiento
-(cross-entropy propagada, estilo SONAR-LLM) necesita los tokens verdaderos.
+Raw text is kept beside the embedding: the propagated-CE objective (SONAR-LLM style)
+needs the ground-truth tokens.
 """
 import json
 from pathlib import Path
@@ -21,7 +21,7 @@ class ShardWriter:
         self.root = Path(out_dir)
         self.root.mkdir(parents=True, exist_ok=True)
         self.shard_size = shard_size
-        # reanudar: continuar la numeración desde los shards ya escritos
+        # resume: continue numbering from existing shards
         self._shard_idx = 0
         if resume:
             existing = [p for p in self.root.iterdir()

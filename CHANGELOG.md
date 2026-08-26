@@ -5,6 +5,7 @@ Formato: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versionamiento: 
 ## [Unreleased]
 
 ### Added
+- **Paradigma de conocimiento estructurado (concepto → grafo):** `GraphDecoder` no-autorregresivo (concepto → nodos + adyacencia etiquetada, presets 1.4M/5.8M/29M), `graph_metrics` (triple F1, GED-proxy, tool-call F1), FLOPs del paradigma en `compute`, y **exp011**: benchmark en RTX 5070 → GraphDecoder **1074× más rápido** en wall-clock (0.013 vs 13.96 ms/concepto) y 144× en FLOPs que el decoder SONAR de texto. Metodología en `docs/internal/specs/2026-08-26-paradigma-grafos-metodologia.md` (pendiente de congelar). Decisión de producto: modelo de conocimiento estructurado, no de prosa.
 - `train_loop_ce`: entrenamiento con el objetivo CE propagada en `train_loop` de producción, con minibatch memory-safe y **checkpoints reanudables** (habilita corridas CE largas / GPU spot). Test con celoss simulado en CPU.
 - **exp002b** (gate con etiqueta compuesta): cierra la limitación de exp002. Con "malo = chrF<60 O ruptura estructural JSON", la tasa de fallo de JSON pasa de 0.8% a 99.8%, y el gate de superficie mejora a AUC 0.969 / 91% precisión @ 90% recall. Refuerza la viabilidad de la resolución adaptativa para el caso agéntico.
 - **exp007** (escalado del piloto): tiny (0.66M) y 39M dan la misma CE held-out (~7.88) → a escala de datos pequeña el cuello de botella son los datos, no la capacidad. El siguiente experimento debe escalar datos, no modelo.

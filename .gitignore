@@ -47,3 +47,6 @@ experiments/*/*.py
 experiments/*/*.json
 experiments/*/*.log
 experiments/*/last.pt
+
+# Metodología interna / know-how (solo local): specs, planes, tooling de proceso
+docs/internal/

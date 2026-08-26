@@ -29,15 +29,16 @@ Hallazgos clave (ver `experiments/*/REPORT.md` y la bitácora): la resolución a
 
 - **Versionamiento:** [SemVer 2.0.0](https://semver.org/). Pre-1.0: la API puede cambiar entre minors. Tags de git `vX.Y.Z`; la versión vive en `pyproject.toml` y `cogito_estella.__version__` (fuente única).
 - **Changelog:** [Keep a Changelog 1.1](https://keepachangelog.com/) en `CHANGELOG.md`.
-- **Commits:** [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `exp:` para experimentos, `docs:`, `test:`, `chore:`).
+- **Commits:** [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `exp:` para experimentos, `docs:`, `chore:`).
 - **Experimentos:** cada experimento vive en `experiments/expNNN_nombre/` con su `REPORT.md`; los resultados se publican además como Artifacts (bitácora entre sesiones).
 - **Especificaciones y planes:** `docs/internal/specs/` y `docs/internal/plans/`.
 
 ## Desarrollo
 
 ```bash
-uv sync            # crea .venv con Python 3.12 y dependencias
-uv run pytest      # tests
+uv sync            # crea .venv con Python 3.12 y dependencias (incl. SONAR/fairseq2)
 ```
 
-Hardware de referencia: RTX 5070 12 GB · CUDA (Blackwell) · fallback CPU para experimentos pequeños.
+El paquete `cogito_estella` expone la arquitectura completa: el `GraphDecoder` (concepto → grafo, no-autorregresivo), el `ConceptTransformer`, la fábrica de conceptos multilingüe y el pipeline de sanitización. Ver `experiments/*/REPORT.md` para la evidencia y `docs/REPORTE-FINAL-paradigma-grafos.md` para el reporte consolidado.
+
+Hardware de referencia: RTX 5070 12 GB · CUDA (Blackwell) · fallback CPU para inferencia pequeña.

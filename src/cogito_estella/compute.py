@@ -208,3 +208,70 @@ def roofline_crossover_batch(stats: dict, peak_flops: float,
     ridge = peak_flops / bw_bytes_s
     denom = stats["flops_per_sample"] - ridge * stats["act_bytes_per_sample"]
     return ridge * stats["weight_bytes"] / denom if denom > 0 else float("inf")
+
+
+# ---------------------------------------------------------------------------
+# The encoder toll ("the KV-cache cost merely moved to the encoder side")
+#
+# Factual basis: the SONAR text encoder is NOT autoregressive. It is a single
+# parallel transformer pass over the source tokens followed by pooling: cost
+# 2*N_enc per token, ONCE per text. The proper comparison is against the token
+# LM's own prefill, which every serving stack also pays: 2*N_tt per token over
+# the same tokens, plus quadratic attention. The encoder is the prefill analog,
+# not an extra toll — and its output (1024 floats per sentence) is a cacheable
+# artifact reusable across every later generation step and every session,
+# whereas KV caches are per-session, per-layer, and evicted under pressure.
+# ---------------------------------------------------------------------------
+
+def sonar_encoder_prefill_flops(n_tokens: int, n_enc: int = 504_000_000) -> float:
+    """One-time encode cost of a context: 2*N_enc per token, single parallel pass."""
+    return 2.0 * n_enc * n_tokens
+
+
+def concept_context_state_bytes(n_tokens: int, tokens_per_concept: float = 25.0,
+                                concept_dim: int = 1024, bytes_per_float: int = 2) -> float:
+    """Per-user resident context state for the concept stack: one embedding per
+    sentence. This is the whole 'cache' — no per-layer, per-token KV."""
+    return (n_tokens / tokens_per_concept) * concept_dim * bytes_per_float
+
+
+def token_kv_cache_bytes(n_tokens: int, n_layers: int, dim: int,
+                         bytes_per_float: int = 2) -> float:
+    """Per-user KV cache of a standard decoder-only LM: K and V per layer per token."""
+    return n_tokens * 2 * n_layers * dim * bytes_per_float
+
+
+# ---------------------------------------------------------------------------
+# Hybrid copy-channel collapse threshold
+#
+# If a fraction f of concepts falls back to an autoregressive copy channel
+# (long open-vocab literals), mean latency is (1-f)*t_graph + f*t_copy and the
+# aggregate speedup vs the 605M text decoder decays. copy_fraction_ceiling
+# gives the largest f that still preserves a target speedup. The measured
+# non-AR alternative (exp017 char-grid: chars as ordered node slots, one pass,
+# 0.0048 ms at K=32) is CHEAPER than an AR fallback by construction and keeps
+# the ceiling from binding for closed-alphabet literals (hex, UUID, digits).
+# ---------------------------------------------------------------------------
+
+SONAR_TEXT_DECODE_MS = 13.96      # measured, exp011
+GRAPH_DECODE_MS = 0.013           # measured, exp011 (medium preset)
+CHAR_GRID_MS_K32 = 0.0048         # measured, exp017 (non-AR char-slot decode, K=32)
+
+
+def hybrid_mean_latency_ms(f_copy: float, t_copy_ms: float,
+                           t_graph_ms: float = GRAPH_DECODE_MS) -> float:
+    """Mean per-concept latency when a fraction f_copy takes the copy channel."""
+    return (1.0 - f_copy) * t_graph_ms + f_copy * t_copy_ms
+
+
+def copy_fraction_ceiling(target_speedup: float, t_copy_ms: float,
+                          t_graph_ms: float = GRAPH_DECODE_MS,
+                          t_baseline_ms: float = SONAR_TEXT_DECODE_MS) -> float:
+    """Largest copy-channel fraction f that keeps mean speedup >= target_speedup.
+    1.0 if even the pure copy channel meets the target (non-binding ceiling)."""
+    budget = t_baseline_ms / target_speedup
+    if t_copy_ms <= budget:
+        return 1.0
+    if t_graph_ms >= budget:
+        return 0.0
+    return (budget - t_graph_ms) / (t_copy_ms - t_graph_ms)

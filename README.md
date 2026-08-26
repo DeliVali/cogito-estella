@@ -2,7 +2,7 @@
 
 Modelo de conceptos (Large Concept Model) entrenado desde cero, con **resolución adaptativa concepto↔token** como contribución arquitectónica central y la **eficiencia medible** (calidad por FLOP) como criterio de éxito.
 
-- **Diseño y veredictos de investigación:** ver el artifact [Ruta de Estudio COGITO]([internal-reference]) (5 preguntas de arquitectura con evidencia).
+- **Diseño y veredictos de investigación:** ver `docs/internal/specs/`.
 - **Qué se publica:** el código de este repositorio y los pesos del modelo. El dataset parseado (embeddings de conceptos) **no** se publica ni se versiona aquí (`data/` está en `.gitignore`).
 
 ## Arquitectura (v0, resumen)

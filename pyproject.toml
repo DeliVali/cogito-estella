@@ -34,6 +34,8 @@ packages = ["src/cogito_estella"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["integration: requiere modelos SONAR descargados y/o red"]
+addopts = "-m 'not integration'"
 
 [tool.ruff]
 line-length = 100

@@ -1,20 +1,20 @@
-"""Accounting de FLOPs para la comparación matched-compute (concepto vs. tokens).
+"""FLOP accounting for the matched-compute comparison (concept vs. tokens).
 
-Convención de factores (estándar Kaplan/Chinchilla):
-- Un parámetro en un matmul cuesta ~2 FLOPs por posición en el forward (multiply-add).
-- Entrenamiento con pesos ENTRENABLES: forward 2ND + backward 4ND = **6ND**
-  (2ND para grad de entrada, 2ND para grad de pesos).
-- Módulo CONGELADO en el grafo (p. ej. el decoder SONAR en la CE propagada): forward 2ND
-  + backward SOLO grad de entrada 2ND = **4ND** (no se computa grad de pesos).
-- Inferencia (con KV-cache, por posición generada): **2ND**.
+Factor convention (standard Kaplan/Chinchilla):
+- A parameter in a matmul costs ~2 FLOPs per position in the forward (multiply-add).
+- Training with TRAINABLE weights: forward 2ND + backward 4ND = **6ND**
+  (2ND for input grad, 2ND for weight grad).
+- FROZEN module in the graph (e.g. the SONAR decoder in propagated CE): forward 2ND
+  + backward for input grad ONLY 2ND = **4ND** (no weight grad computed).
+- Inference (with KV-cache, per generated position): **2ND**.
 
-N = parámetros que participan en matmuls (excluye tablas de embedding, que son lookups).
-D = número de posiciones procesadas (tokens para el modelo de tokens; conceptos para el
-    ConceptTransformer; tokens para el decoder/encoder SONAR).
+N = parameters participating in matmuls (excludes embedding tables, which are lookups).
+D = number of positions processed (tokens for the token model; concepts for the
+    ConceptTransformer; tokens for the SONAR decoder/encoder).
 
-El punto de justicia CRÍTICO: el modelo de conceptos, para computar su pérdida, invoca el
-decoder SONAR congelado (~N_dec grande). Ignorar ese costo favorece injustamente al modelo
-de conceptos. Este módulo lo cuenta explícitamente.
+The CRITICAL fairness point: to compute its loss the concept model invokes the frozen
+SONAR decoder (~large N_dec). Ignoring that cost unfairly favors the concept model.
+This module counts it explicitly.
 """
 from dataclasses import dataclass
 
@@ -41,14 +41,14 @@ class FlopBreakdown:
 
 def concept_training_flops(n_ct: int, n_dec: int, n_enc: int, n_concepts: int,
                            tokens_per_concept: float, n_epochs: float) -> FlopBreakdown:
-    """FLOPs de entrenar el modelo de conceptos sobre `n_concepts` conceptos, `n_epochs` veces.
+    """FLOPs to train the concept model over `n_concepts` concepts, `n_epochs` times.
 
-    - ConceptTransformer (entrenable): 6 · N_ct · (conceptos procesados).
-    - Decoder SONAR (congelado, teacher forcing sobre los tokens de cada concepto):
-      4 · N_dec · (tokens decodificados).
-    - Encoder SONAR (congelado, se paga UNA vez para construir el dataset, se amortiza):
-      2 · N_enc · (tokens del corpus) / n_epochs  → aquí se devuelve el costo total del
-      encode dividido entre épocas (el costo por época).
+    - ConceptTransformer (trainable): 6 · N_ct · (concepts processed).
+    - SONAR decoder (frozen, teacher forcing over each concept's tokens):
+      4 · N_dec · (tokens decoded).
+    - SONAR encoder (frozen, paid ONCE to build the dataset, amortized):
+      2 · N_enc · (corpus tokens) / n_epochs  → returns the total encode cost divided
+      by epochs (the per-epoch cost).
     """
     concepts_processed = n_concepts * n_epochs
     tokens_decoded = concepts_processed * tokens_per_concept
@@ -56,72 +56,72 @@ def concept_training_flops(n_ct: int, n_dec: int, n_enc: int, n_concepts: int,
     return FlopBreakdown(
         concept_transformer=6 * n_ct * concepts_processed,
         sonar_decoder=4 * n_dec * tokens_decoded,
-        sonar_encoder_amortized=2 * n_enc * corpus_tokens,  # total del encode (una vez)
+        sonar_encoder_amortized=2 * n_enc * corpus_tokens,  # total encode (once)
     )
 
 
 def token_training_flops(n_tt: int, n_concepts: int, tokens_per_concept: float,
                          n_epochs: float) -> FlopBreakdown:
-    """FLOPs de entrenar el baseline de tokens sobre el MISMO texto (mismos tokens).
-    6 · N_tt · (tokens procesados). N_tt incluye bloques + cabeza LM (matmul d×vocab),
-    excluye la tabla de embedding (lookup).
+    """FLOPs to train the token baseline over the SAME text (same tokens).
+    6 · N_tt · (tokens processed). N_tt includes blocks + LM head (d×vocab matmul),
+    excludes the embedding table (lookup).
     """
     tokens_processed = n_concepts * tokens_per_concept * n_epochs
     return FlopBreakdown(token_transformer=6 * n_tt * tokens_processed)
 
 
 def concept_inference_flops_per_token(n_ct: int, n_dec: int, tokens_per_concept: float) -> float:
-    """FLOPs por token GENERADO en inferencia (generación corta).
-    Por concepto: 2·N_ct (predecir el embedding) + 2·N_dec·L_tok (decodificarlo).
-    Por token: 2·N_ct/L_tok + 2·N_dec.
+    """FLOPs per GENERATED token at inference (short generation).
+    Per concept: 2·N_ct (predict the embedding) + 2·N_dec·L_tok (decode it).
+    Per token: 2·N_ct/L_tok + 2·N_dec.
     """
     return 2 * n_ct / tokens_per_concept + 2 * n_dec
 
 
 def token_inference_flops_per_token(n_tt: int) -> float:
-    """FLOPs por token generado por el baseline de tokens (con KV-cache): 2·N_tt."""
+    """FLOPs per token generated by the token baseline (with KV-cache): 2·N_tt."""
     return 2 * n_tt
 
 
 def context_processing_flops(n_model: int, n_positions: int, dim: int) -> float:
-    """FLOPs de PROCESAR un contexto de `n_positions` posiciones (prefill), incluyendo
-    el término cuadrático de atención. 2·N·P (matmuls) + 2·(P²·dim) (atención QK^T y AV).
-    Aquí está la ventaja del modelo de conceptos: comprime el contexto ~L_tok×, así que
-    P_conceptos = P_tokens / L_tok, reduciendo tanto el término lineal como el cuadrático.
+    """FLOPs to PROCESS a context of `n_positions` positions (prefill), including the
+    quadratic attention term. 2·N·P (matmuls) + 2·(P²·dim) (QK^T and AV attention).
+    This is the concept model's edge: it compresses the context ~L_tok×, so
+    P_concepts = P_tokens / L_tok, shrinking both the linear and quadratic terms.
     """
     return 2 * n_model * n_positions + 2 * (n_positions ** 2) * dim
 
 
 def concept_graph_training_flops(n_ct: int, n_gdec: int, n_enc: int, n_concepts: int,
                                  tokens_per_concept: float, n_epochs: float) -> FlopBreakdown:
-    """Modelo de conceptos con GraphDecoder (entrenable, NO-autorregresivo).
-    Clave: el graph decoder es O(1) en longitud (K nodos fijos), así que su costo por
-    concepto es 6·N_gdec (una pasada), SIN el factor L_tok que penaliza al decoder de texto.
+    """Concept model with GraphDecoder (trainable, NON-autoregressive).
+    Key: the graph decoder is O(1) in length (K fixed nodes), so its per-concept cost is
+    6·N_gdec (one pass), WITHOUT the L_tok factor that penalizes the text decoder.
     """
     concepts_processed = n_concepts * n_epochs
     corpus_tokens = n_concepts * tokens_per_concept
     return FlopBreakdown(
         concept_transformer=6 * n_ct * concepts_processed,
-        sonar_decoder=6 * n_gdec * concepts_processed,   # graph decoder entrenable, O(1)
+        sonar_decoder=6 * n_gdec * concepts_processed,   # trainable graph decoder, O(1)
         sonar_encoder_amortized=2 * n_enc * corpus_tokens,
     )
 
 
 def concept_graph_inference_flops_per_concept(n_ct: int, n_gdec: int) -> float:
-    """FLOPs por CONCEPTO generado con GraphDecoder: 2·N_ct + 2·N_gdec (una pasada)."""
+    """FLOPs per CONCEPT generated with GraphDecoder: 2·N_ct + 2·N_gdec (one pass)."""
     return 2 * n_ct + 2 * n_gdec
 
 
 def token_graph_extraction_flops_per_concept(n_tt: int, serialized_graph_tokens: float,
                                              train: bool = False) -> float:
-    """Baseline de tokens extrayendo el grafo: genera el grafo SERIALIZADO (triples como
-    texto) autorregresivamente. Costo = (6 si train else 2)·N_tt·(tokens serializados)."""
+    """Token baseline extracting the graph: generates the SERIALIZED graph (triples as
+    text) autoregressively. Cost = (6 if train else 2)·N_tt·(serialized tokens)."""
     factor = 6 if train else 2
     return factor * n_tt * serialized_graph_tokens
 
 
 def flops_summary(n_ct, n_dec, n_enc, n_tt, n_concepts, tokens_per_concept, n_epochs) -> dict:
-    """Reporte comparativo completo para un presupuesto dado."""
+    """Full comparative report for a given budget."""
     ct = concept_training_flops(n_ct, n_dec, n_enc, n_concepts, tokens_per_concept, n_epochs)
     tt = token_training_flops(n_tt, n_concepts, tokens_per_concept, n_epochs)
     return {

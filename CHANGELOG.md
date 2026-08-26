@@ -4,6 +4,14 @@ Formato: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versionamiento: 
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-26
+
+Piloto de generalización + robustez de memoria.
+
+### Added
+- **exp006** (piloto de generalización): el modelo entrenado con CE generaliza a documentos no vistos — CE held-out 7.90 vs persistencia 9.76 vs media 9.18. Piloto a escala pequeña (0.66M, 160 docs); el baseline de tokens matched-compute es el siguiente hito.
+- `SonarCELoss.max_tokens` (default 96): trunca unidades largas para acotar la memoria de logits (vocab 256k) — una unidad patológica inflaba el padding de todo el minibatch.
+
 ## [0.2.1] - 2026-08-26
 
 El objetivo de entrenamiento REAL: cross-entropy propagada por el decoder SONAR congelado (mecanismo de SONAR-LLM).

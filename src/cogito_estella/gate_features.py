@@ -1,22 +1,20 @@
-"""Features de superficie baratas para el gate de resolución adaptativa.
+"""Cheap surface features for the adaptive-resolution gate.
 
-Hipótesis (idea de Jeffrey, respaldada por el patching por entropía de BLT): el
-riesgo de que una unidad round-trippee mal por SONAR es predecible desde señales
-baratas. Estas features son el predictor más barato posible (sin tocar SONAR);
-exp002 las compara contra un probe sobre el propio embedding SONAR.
+Round-trip failure risk is predictable from cheap signals (cf. BLT entropy patching);
+this is the cheapest possible predictor (no SONAR forward).
 """
 import numpy as np
 
 FEATURE_NAMES = [
-    "length",          # log-longitud en caracteres (normaliza escala)
-    "digit_ratio",     # fracción de dígitos
-    "punct_ratio",     # fracción de puntuación/símbolos no alfanuméricos ni espacio
-    "brace_ratio",     # fracción de llaves { }
-    "bracket_ratio",   # fracción de corchetes [ ]
-    "quote_ratio",     # fracción de comillas " '
-    "upper_ratio",     # fracción de mayúsculas
-    "whitespace_ratio",  # fracción de espacios en blanco
-    "nonascii_ratio",  # fracción de caracteres fuera de ASCII
+    "length",          # log char length
+    "digit_ratio",
+    "punct_ratio",
+    "brace_ratio",
+    "bracket_ratio",
+    "quote_ratio",
+    "upper_ratio",
+    "whitespace_ratio",
+    "nonascii_ratio",
 ]
 
 

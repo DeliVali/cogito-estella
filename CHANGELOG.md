@@ -7,7 +7,7 @@ Formato: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versionamiento: 
 ### Added
 - **exp002b** (gate con etiqueta compuesta): cierra la limitación de exp002. Con "malo = chrF<60 O ruptura estructural JSON", la tasa de fallo de JSON pasa de 0.8% a 99.8%, y el gate de superficie mejora a AUC 0.969 / 91% precisión @ 90% recall. Refuerza la viabilidad de la resolución adaptativa para el caso agéntico.
 - **exp007** (escalado del piloto): tiny (0.66M) y 39M dan la misma CE held-out (~7.88) → a escala de datos pequeña el cuello de botella son los datos, no la capacidad. El siguiente experimento debe escalar datos, no modelo.
-- **exp008** (escalar datos): 5× más datos (160→800 docs) baja la CE del modelo de 7.89 a 7.58 y estrecha la brecha con el baseline de media de +0.133 a +0.052 (aún no la cruza, pero la tendencia apunta a que lo hará con más datos). Confirma el diagnóstico de exp007.
+- **exp008** (escalar datos, 3 puntos): al escalar 160→800→2500 docs, la CE del modelo baja 7.89→7.58→7.29 y **cruza el baseline de media** (prior marginal) a 2500 docs (brecha +0.133→+0.052→−0.265). Confirma exp007 y demuestra que con suficientes datos el modelo aprende estructura secuencial generalizable que supera al prior.
 
 ### Fixed
 - **Bug de métrica en la evaluación de generalización** (`eval_ce`): ponderaba la CE por número de conceptos en vez de por tokens, haciéndola dependiente del batch. Corregido con `SonarCELoss.loss_sum` (bits/token batch-invariante, test `test_loss_sum_matches_mean`). **Esto corrige el veredicto de exp006**: el modelo bate la persistencia pero NO la media a escala piloto (antes se afirmaba, erróneamente, que batía ambos).

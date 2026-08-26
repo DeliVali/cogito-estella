@@ -37,3 +37,4 @@ CLAUDE.md
 
 # --- Grafo de conocimiento local (graphify) ---
 graphify-out/
+.claude/

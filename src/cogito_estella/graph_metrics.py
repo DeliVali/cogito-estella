@@ -1,15 +1,14 @@
-"""Métricas de fidelidad ESTRUCTURAL (paradigma de grafos).
+"""Structural fidelity metrics (graph paradigm).
 
-Al abandonar el texto crudo, "bits/token" ya no aplica. Estas métricas miden qué tan
-bien se recupera la estructura (grafo/triples/tool-call), manteniendo la comparación
-justa: se aplican IGUAL al output del modelo de conceptos (GraphDecoder) y al del
-baseline de tokens (que serializa el grafo). Puras, sin GPU.
+Once raw text is dropped, "bits/token" no longer applies. These measure structure
+recovery (graph/triples/tool-call), applied identically to the concept model and the
+token baseline. Pure, no GPU.
 """
 import json
 
 
 def triple_prf1(pred: set, gold: set) -> tuple[float, float, float]:
-    """Precision, recall y F1 sobre conjuntos de triples (sujeto, relación, objeto)."""
+    """Precision, recall, F1 over (subject, relation, object) triple sets."""
     if not pred and not gold:
         return 1.0, 1.0, 1.0
     tp = len(pred & gold)
@@ -21,15 +20,13 @@ def triple_prf1(pred: set, gold: set) -> tuple[float, float, float]:
 
 def graph_edit_distance_proxy(pred_nodes: set, pred_edges: set,
                               gold_nodes: set, gold_edges: set) -> int:
-    """GED-proxy: nodos y aristas con etiquetas fijas (sin buscar alineamiento óptimo,
-    que es NP-hard). Cuenta la diferencia simétrica de nodos + la de aristas. Es un
-    límite superior barato de la GED real; adecuado para grafos pequeños por-oración.
-    """
+    """Symmetric-difference proxy for GED (optimal alignment is NP-hard). Cheap upper
+    bound; fine for small per-sentence graphs."""
     return len(pred_nodes ^ gold_nodes) + len(pred_edges ^ gold_edges)
 
 
 def graph_edit_distance_normalized(pred_nodes, pred_edges, gold_nodes, gold_edges) -> float:
-    """GED-proxy normalizada a [0,1] por el tamaño total (peor caso: todo distinto)."""
+    """GED proxy normalized to [0, 1] by total size."""
     ged = graph_edit_distance_proxy(pred_nodes, pred_edges, gold_nodes, gold_edges)
     denom = (len(pred_nodes) + len(gold_nodes) + len(pred_edges) + len(gold_edges))
     return ged / denom if denom else 0.0
@@ -44,7 +41,7 @@ def _parse_tool_call(text: str):
 
 
 def tool_call_exact(pred: str, gold: str) -> bool:
-    """True si nombre y argumentos coinciden exactamente (orden de claves irrelevante)."""
+    """Exact match on name + arguments (key order irrelevant)."""
     pn, pa = _parse_tool_call(pred)
     gn, ga = _parse_tool_call(gold)
     if pn is None or gn is None:
@@ -53,8 +50,7 @@ def tool_call_exact(pred: str, gold: str) -> bool:
 
 
 def tool_call_arg_f1(pred: str, gold: str) -> float:
-    """F1 sobre el conjunto de pares (clave, valor) de argumentos, más el nombre.
-    Recompensa aciertos parciales (un tool-call casi correcto no vale 0)."""
+    """F1 over the (key, value) argument set plus the name (rewards partial matches)."""
     pn, pa = _parse_tool_call(pred)
     gn, ga = _parse_tool_call(gold)
     if pa is None or ga is None:

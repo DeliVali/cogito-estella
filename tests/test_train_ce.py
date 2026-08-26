@@ -40,6 +40,27 @@ def test_next_concept_ce_shapes_and_grouping():
     assert langs_called == {"eng_Latn", "spa_Latn"}
 
 
+def test_train_loop_ce_runs_and_checkpoints(tmp_path):
+    import numpy as np
+
+    cfg = named_config("tiny")
+    model = ConceptTransformer(cfg)
+    N, T = 6, 3
+    seq_emb = np.random.default_rng(0).standard_normal((N, T, cfg.concept_dim)).astype(np.float32)
+    seq_text = [[f"doc{n}_s{t}" for t in range(T)] for n in range(N)]
+    seq_lang = ["eng_Latn"] * N
+    fake = FakeCELoss()
+    metrics = train.train_loop_ce(model, seq_emb, seq_text, seq_lang, fake,
+                                  steps=20, lr=1e-3, batch_size=3, device="cpu",
+                                  out_dir=str(tmp_path), log_every=1)
+    assert len(metrics) >= 1
+    assert (tmp_path / "last.pt").exists()  # checkpoint escrito
+    # reanudable: cargar el checkpoint devuelve el paso
+    from cogito_estella.model.train import load_checkpoint
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    assert load_checkpoint(tmp_path / "last.pt", ConceptTransformer(cfg), opt) == 20
+
+
 def test_next_concept_ce_targets_next_concept_text():
     # el objetivo del texto en posición t debe ser el concepto t+1
     cfg = named_config("tiny")

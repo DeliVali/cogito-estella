@@ -72,6 +72,52 @@ def next_concept_ce(model, batch: torch.Tensor, texts_batch, langs_batch, celoss
     return total / n
 
 
+def train_loop_ce(model, sequences_emb: np.ndarray, sequences_text: list, sequences_lang: list,
+                  celoss, steps: int, lr: float, batch_size: int, device: str = "cpu",
+                  out_dir: str | None = None, resume: bool = False, log_every: int = 50,
+                  ckpt_every: int = 500, seed: int = 0) -> list[dict]:
+    """Entrenamiento con el objetivo REAL (CE propagada por SONAR congelado).
+
+    sequences_emb: [N, T, 1024] embeddings de concepto.
+    sequences_text: list[N] de list[T] textos por concepto.
+    sequences_lang: list[N] idioma por secuencia.
+    celoss: objeto con .loss(pred_emb, texts, lang) (p.ej. SonarCELoss).
+    Minibatch pequeño por paso (el decoder de vocab 256k limita la memoria).
+    Checkpoints reanudables (crítico para corridas largas / GPU spot).
+    """
+    torch.manual_seed(seed)
+    model = model.to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.1)
+    start_step = 0
+    if resume and out_dir and (Path(out_dir) / "last.pt").exists():
+        start_step = load_checkpoint(Path(out_dir) / "last.pt", model, opt)
+
+    data = torch.from_numpy(sequences_emb).float().to(device)
+    n = data.shape[0]
+    rng = np.random.default_rng(seed)
+    metrics = []
+    for step in range(start_step, steps):
+        idx = rng.integers(0, n, size=min(batch_size, n))
+        for g in opt.param_groups:
+            g["lr"] = _cosine_lr(step, steps, lr)
+        opt.zero_grad(set_to_none=True)
+        loss = next_concept_ce(model, data[idx], [sequences_text[i] for i in idx],
+                               [sequences_lang[i] for i in idx], celoss)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+        if step % log_every == 0 or step == steps - 1:
+            metrics.append({"step": step, "loss": float(loss.item()),
+                            "lr": opt.param_groups[0]["lr"]})
+        if out_dir and ckpt_every and step > 0 and step % ckpt_every == 0:
+            save_checkpoint(Path(out_dir) / "last.pt", model, opt, step)
+        if device == "cuda":
+            torch.cuda.empty_cache()
+    if out_dir:
+        save_checkpoint(Path(out_dir) / "last.pt", model, opt, steps)
+    return metrics
+
+
 def save_checkpoint(path, model, optimizer, step: int) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),

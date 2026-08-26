@@ -1,4 +1,7 @@
-"""Muestreo de unidades de texto por categoría: sintéticos, HF streaming y fallback local."""
+"""Text-unit sampling by category: synthetic, HF streaming, local fallback.
+
+Note: synthetic templates are intentionally multilingual (Spanish/English) test data.
+"""
 import random
 import re
 from dataclasses import dataclass

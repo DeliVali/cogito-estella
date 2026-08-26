@@ -13,11 +13,17 @@ Segmentación de oraciones (SaT) → espacio de embeddings SONAR congelado → t
 
 | Versión | Hito | Estado |
 |---|---|---|
-| v0.0.x | Experimento cero: fidelidad round-trip de SONAR por tipo de dato | en curso |
-| v0.1.x | Fábrica de conceptos: pipeline HF → SaT → SONAR → shards | pendiente |
-| v0.2.x | Modelo semilla 100-300M + baseline matched-compute | pendiente |
-| v0.3.x | Escalado ~1B (renta, solo si v0.2 valida) | pendiente |
-| v0.4.x | Integración agéntica | pendiente |
+| v0.0.1 | Experimento cero: fidelidad round-trip de SONAR por tipo de dato (exp000) | ✅ hecho |
+| v0.1.0 | Fábrica de conceptos: SaT + concept_store + gate_features; ablación de segmentación (exp001) y viabilidad del gate (exp002/002b) | ✅ hecho |
+| v0.2.0 | Backbone: ConceptTransformer + train_loop; overfit end-to-end (exp003) | ✅ hecho |
+| v0.2.1 | Objetivo real: CE propagada por decoder SONAR congelado (exp005) | ✅ hecho |
+| v0.2.2 | Generalización: el modelo cruza el prior marginal al escalar datos (exp006/007/008) | ✅ hecho |
+| v0.2.3 | Baseline de tokens + metodología matched-compute (spec) | ✅ hecho (spec pend. revisión) |
+| v0.2.4 | `train_loop_ce`: objetivo CE en producción con checkpoints reanudables | ✅ hecho |
+| v0.3.x | Baseline de tokens matched-compute a escala (declara la tesis de eficiencia) | ⏳ pendiente de revisión de metodología |
+| v0.4.x | Escalado (renta, solo si valida) + integración agéntica | pendiente |
+
+Hallazgos clave (ver `experiments/*/REPORT.md` y la bitácora): la resolución adaptativa concepto↔token tiene base empírica (fallo de round-trip predecible, AUC 0.93–0.97); el objetivo CE propagada entrena en la RTX 5070; el modelo generaliza y cruza el prior marginal con datos suficientes (robusto a 3 semillas). Nada es aún comparable a un LM de tokens — ese es el hito v0.3.
 
 ## Estándares del repositorio
 

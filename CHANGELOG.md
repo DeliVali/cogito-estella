@@ -4,6 +4,35 @@ Formato: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versionamiento: 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-26
+
+Backbone del modelo de conceptos + loop de entrenamiento, validados end-to-end.
+
+### Added
+- `cogito_estella.model.transformer.ConceptTransformer`: decoder-only estilo Llama 3 (RoPE, RMSNorm, SwiGLU, atención causal) operando en el espacio SONAR de 1024 dims; presets tiny/39M/100M/300M.
+- `cogito_estella.model.train`: loop de entrenamiento (MSE next-concept), AdamW + cosine LR + grad clip + bf16, checkpoints reanudables; `build_sequences` agrupa conceptos por doc sin cruzar fronteras.
+- **exp003** (overfit smoke test): tiny (6221×) y 39M (6162×) sobreajustan embeddings SONAR reales en la RTX 5070 → pipeline completo validado.
+
+### Notes
+- v0.2.0 valida ingeniería (forward/backward/pipeline), no ciencia. El objetivo real (CE propagada por el decoder SONAR congelado, estilo SONAR-LLM) es v0.2.1.
+
+## [0.1.0] - 2026-08-26
+
+Fábrica de conceptos (segmentación SaT + almacén) y validación de la resolución adaptativa.
+
+### Added
+- `cogito_estella.segmenter.Segmenter`: wrapper SaT (sat-3l-sm, half en GPU) robusto a estilo/corrupción.
+- `cogito_estella.concept_store`: shards memory-mapped (embedding fp16 + texto crudo + metadatos) con `ShardWriter`/`ConceptDataset`.
+- `cogito_estella.gate_features`: 9 features de superficie baratas para el gate.
+- **exp001** (ablación de segmentación): SaT rescata el código (chrF 39.9→89.0, colapso 12.4%→0%); confound longitud/frontera documentado.
+- **exp002** (viabilidad del gate): el fallo de round-trip es predecible con AUC 0.93 desde features de superficie (superan al embedding SONAR) → base empírica de la resolución adaptativa.
+
+### Fixed
+- `SonarCodec` resiliente a CUDA OOM (split adaptativo del batch) al decodificar unidades largas de código en GPU de 12 GB.
+
+### Changed
+- `SonarCodec` expone `encode`/`decode` por separado (roundtrip los compone).
+
 ## [0.0.1] - 2026-08-25
 
 ### Added

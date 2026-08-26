@@ -44,6 +44,34 @@ def next_concept_mse(model, batch: torch.Tensor) -> torch.Tensor:
     return F.mse_loss(pred[:, :-1], batch[:, 1:])
 
 
+def next_concept_ce(model, batch: torch.Tensor, texts_batch, langs_batch, celoss) -> torch.Tensor:
+    """Objetivo real (SONAR-LLM): CE propagada por el decoder SONAR congelado.
+
+    batch: [B, T, 1024] embeddings. texts_batch: [B][T] textos de cada concepto.
+    langs_batch: [B] idioma por secuencia. Para cada posición t<T-1, el modelo
+    predice ê que debe decodificar al texto del concepto t+1.
+    """
+    pred = model(batch)  # [B, T, 1024]
+    pred_flat, tgt_texts, tgt_langs = [], [], []
+    B, T, _ = batch.shape
+    for b in range(B):
+        for t in range(T - 1):
+            pred_flat.append(pred[b, t])
+            tgt_texts.append(texts_batch[b][t + 1])
+            tgt_langs.append(langs_batch[b])
+    pred_emb = torch.stack(pred_flat)  # [(B*(T-1)), 1024]
+    # agrupar por idioma (el decoder necesita el lang tag correcto)
+    total = torch.zeros((), device=pred_emb.device)
+    n = 0
+    for lang in set(tgt_langs):
+        idx = [i for i, l in enumerate(tgt_langs) if l == lang]
+        sub_emb = pred_emb[idx]
+        sub_txt = [tgt_texts[i] for i in idx]
+        total = total + celoss.loss(sub_emb, sub_txt, lang) * len(idx)
+        n += len(idx)
+    return total / n
+
+
 def save_checkpoint(path, model, optimizer, step: int) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),

@@ -4,6 +4,18 @@ Formato: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versionamiento: 
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-26
+
+El objetivo de entrenamiento REAL: cross-entropy propagada por el decoder SONAR congelado (mecanismo de SONAR-LLM).
+
+### Added
+- `cogito_estella.model.sonar_loss.SonarCELoss`: computa CE con teacher forcing a través del decoder SONAR congelado; el gradiente fluye al embedding predicho, no al decoder. Carga en bf16 para memoria.
+- `cogito_estella.model.train.next_concept_ce`: objetivo CE next-concept (aplana [B,T] conceptos, agrupa por idioma para el lang tag correcto).
+- **exp005** (overfit con CE real): tiny reduce CE 16.67→4.62 (−72%) en la RTX 5070 → el objetivo científico funciona end-to-end. Test de cordura: embedding verdadero CE~0.3, aleatorio CE~20.
+
+### Notes
+- `train_loop` de producción sigue en MSE; la integración de la CE (con dataset que acarree textos) y el manejo de EOS son v0.2.2.
+
 ## [0.2.0] - 2026-08-26
 
 Backbone del modelo de conceptos + loop de entrenamiento, validados end-to-end.

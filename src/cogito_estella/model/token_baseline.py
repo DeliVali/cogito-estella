@@ -58,6 +58,21 @@ class TokenTransformer(nn.Module):
         return self.lm_head(h)
 
 
+@torch.no_grad()
+def greedy_generate(model: "TokenTransformer", prefix: torch.Tensor, max_new: int,
+                    eos_id: int = None) -> torch.Tensor:
+    """Generación greedy autorregresiva. prefix: [B, T0]. Devuelve [B, T0+generados]."""
+    model.eval()
+    seq = prefix
+    for _ in range(max_new):
+        logits = model(seq[:, -model.cfg.max_seq_len:])
+        nxt = logits[:, -1].argmax(dim=-1, keepdim=True)
+        seq = torch.cat([seq, nxt], dim=1)
+        if eos_id is not None and bool((nxt == eos_id).all()):
+            break
+    return seq
+
+
 def token_param_count(cfg: TokenConfig) -> int:
     d = cfg.dim
     hidden = int(cfg.mlp_ratio * d)

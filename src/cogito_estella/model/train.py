@@ -38,6 +38,35 @@ def build_sequences(dataset, seq_len: int) -> np.ndarray:
     return np.stack(seqs).astype(np.float32)
 
 
+def build_sequences_with_text(dataset, seq_len: int):
+    """Como build_sequences pero también devuelve los textos e idioma por concepto
+    (necesarios para el objetivo CE propagada). Agrupa por doc_id sin cruzar fronteras.
+
+    Devuelve (emb [n_seq, seq_len, 1024] float32, textos list[n_seq][seq_len],
+    idiomas list[n_seq]).
+    """
+    groups: dict[str, list] = {}
+    order: list[str] = []
+    for i in range(len(dataset)):
+        emb, meta = dataset[i]
+        doc = meta["doc_id"]
+        if doc not in groups:
+            groups[doc] = []
+            order.append(doc)
+        groups[doc].append((np.asarray(emb, dtype=np.float32), meta["text"], meta["lang"]))
+    emb_seqs, text_seqs, lang_seqs = [], [], []
+    for doc in order:
+        items = groups[doc]
+        for c in range(len(items) // seq_len):
+            chunk = items[c * seq_len:(c + 1) * seq_len]
+            emb_seqs.append(np.stack([e for e, _, _ in chunk]))
+            text_seqs.append([t for _, t, _ in chunk])
+            lang_seqs.append(chunk[0][2])
+    if not emb_seqs:
+        return np.zeros((0, seq_len, 1024), dtype=np.float32), [], []
+    return np.stack(emb_seqs).astype(np.float32), text_seqs, lang_seqs
+
+
 def next_concept_mse(model, batch: torch.Tensor) -> torch.Tensor:
     """batch: [B, T, 1024]. Predice el concepto t+1 a partir de <=t."""
     pred = model(batch)  # [B, T, 1024]

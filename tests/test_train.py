@@ -42,6 +42,33 @@ def test_build_sequences_does_not_cross_doc_boundaries():
     assert seqs.shape[0] == 0
 
 
+def _fake_ds_with_text(n_docs=2, per_doc=6, dim=1024, seed=0):
+    rng = np.random.default_rng(seed)
+    items = []
+    for d in range(n_docs):
+        for i in range(per_doc):
+            meta = {"doc_id": f"doc{d}", "text": f"doc{d}_sent{i}", "lang": "eng_Latn"}
+            items.append((rng.standard_normal(dim).astype(np.float16), meta))
+    return FakeDataset(items)
+
+
+def test_build_sequences_with_text():
+    ds = _fake_ds_with_text(n_docs=2, per_doc=6)
+    emb, texts, langs = train.build_sequences_with_text(ds, seq_len=3)
+    # 2 docs x 6 conceptos -> 2 chunks de 3 por doc -> 4 secuencias
+    assert emb.shape == (4, 3, 1024)
+    assert emb.dtype == np.float32
+    assert len(texts) == 4 and len(texts[0]) == 3
+    assert texts[0] == ["doc0_sent0", "doc0_sent1", "doc0_sent2"]
+    assert langs == ["eng_Latn"] * 4
+
+
+def test_build_sequences_with_text_no_cross_doc():
+    ds = _fake_ds_with_text(n_docs=1, per_doc=2)  # < seq_len 3
+    emb, texts, langs = train.build_sequences_with_text(ds, seq_len=3)
+    assert emb.shape[0] == 0 and texts == [] and langs == []
+
+
 def test_mse_loss_decreases_overfit_cpu():
     torch.manual_seed(0)
     cfg = named_config("tiny")

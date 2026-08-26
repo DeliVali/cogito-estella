@@ -52,6 +52,22 @@ class GraphDecoder(nn.Module):
                 "adj_logits": adj_logits, "nodes": nodes}
 
 
+def graph_loss(out: dict, tgt_exist, tgt_labels, tgt_adj):
+    """Pérdida estructural: BCE de existencia + CE de etiquetas (solo nodos existentes)
+    + BCE de adyacencia. out: salida de GraphDecoder; targets: tensores [B,K], [B,K], [B,R,K,K].
+    """
+    import torch.nn.functional as F
+
+    exist_loss = F.binary_cross_entropy_with_logits(out["exist_logits"], tgt_exist)
+    # etiquetas: CE por nodo, ponderada por existencia (no penalizar slots vacíos)
+    B, K, V = out["label_logits"].shape
+    label_ce = F.cross_entropy(out["label_logits"].reshape(B * K, V),
+                               tgt_labels.reshape(B * K), reduction="none").reshape(B, K)
+    label_loss = (label_ce * tgt_exist).sum() / tgt_exist.sum().clamp(min=1)
+    adj_loss = F.binary_cross_entropy_with_logits(out["adj_logits"], tgt_adj)
+    return exist_loss + label_loss + adj_loss
+
+
 def decode_triples(exist_logits, label_logits, adj_logits, threshold: float = 0.5):
     """Convierte logits en un conjunto de triples (label_i, relación, label_j) por muestra.
     Un nodo existe si sigmoid(exist) > threshold; una arista si sigmoid(adj) > threshold.

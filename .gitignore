@@ -1,0 +1,33 @@
+# --- Datos: el dataset parseado NUNCA se versiona ni se publica ---
+data/
+*.parquet
+*.safetensors
+*.npy
+*.npz
+*.arrow
+
+# --- Modelos y checkpoints ---
+checkpoints/
+runs/
+wandb/
+*.pt
+*.ckpt
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# --- Entorno / herramientas ---
+.env
+.envrc
+*.log
+.ipynb_checkpoints/
+
+# --- HuggingFace cache local del proyecto (si se redirige aquí) ---
+.hf_cache/

@@ -1,22 +1,22 @@
-"""Pérdida CE propagada por el decoder SONAR congelado (mecanismo de SONAR-LLM).
+"""CE loss back-propagated through the frozen SONAR decoder (SONAR-LLM mechanism).
 
-El modelo de conceptos predice un embedding ê_t; lo alimentamos como salida del
-encoder al decoder SONAR **congelado** con teacher forcing sobre los tokens
-verdaderos de la oración objetivo, y computamos cross-entropy a nivel token. El
-gradiente fluye por el decoder congelado hasta ê_t, dándonos señal de verosimilitud
-(a diferencia de MSE, que colapsa al promedio, o difusión, que no da log-probs).
+The concept model predicts an embedding ê_t; we feed it as the encoder output to the
+**frozen** SONAR decoder with teacher forcing over the target sentence's true tokens,
+and compute token-level cross-entropy. The gradient flows through the frozen decoder
+back to ê_t, giving a likelihood signal (unlike MSE, which collapses to the mean, or
+diffusion, which yields no log-probs).
 
-Validado empíricamente (exp004): el embedding verdadero de una oración da CE ~0.3-0.5,
-uno aleatorio ~20 — la pérdida discrimina correctamente.
+Empirically validated (exp004): a sentence's true embedding gives CE ~0.3-0.5, a random
+one ~20 — the loss discriminates correctly.
 """
 import torch
 import torch.nn.functional as F
 
 
 class SonarCELoss:
-    """Envuelve el decoder SONAR congelado para computar CE con teacher forcing.
+    """Wraps the frozen SONAR decoder to compute CE with teacher forcing.
 
-    El decoder y el tokenizer se mantienen congelados (requires_grad_(False), eval).
+    Decoder and tokenizer stay frozen (requires_grad_(False), eval).
     """
 
     def __init__(self, device: torch.device | str = "cpu", dtype=None, max_tokens: int = 96):
@@ -32,14 +32,14 @@ class SonarCELoss:
             dtype=dtype,
         )
         self.device = dev
-        self.max_tokens = max_tokens  # tope de longitud: acota la memoria de logits (vocab 256k)
+        self.max_tokens = max_tokens  # length cap: bounds logits memory (256k vocab)
         self.model = pipe.model.eval().requires_grad_(False)
         self.tokenizer = pipe.tokenizer
         self.pad_idx = self.tokenizer.vocab_info.pad_idx
         self.eos_idx = self.tokenizer.vocab_info.eos_idx
         self._encoders: dict[str, object] = {}
-        # dtype de los parámetros del decoder (para castear el embedding de entrada);
-        # cargar en bf16 reduce a la mitad la memoria de los logits de vocab 256k.
+        # decoder param dtype (to cast the input embedding); loading in bf16 halves
+        # the 256k-vocab logits memory.
         self._param_dtype = next(self.model.parameters()).dtype
 
     def _encoder(self, lang: str):
@@ -49,12 +49,12 @@ class SonarCELoss:
         return self._encoders[lang]
 
     def tokenize(self, texts: list[str], lang: str) -> tuple[torch.Tensor, torch.Tensor]:
-        """texts -> (tgt_in, labels) con teacher forcing y padding. Ambos [B, T-1]."""
+        """texts -> (tgt_in, labels) with teacher forcing and padding. Both [B, T-1]."""
         enc = self._encoder(lang)
         id_seqs = []
         for t in texts:
             ids = enc(t)
-            if ids.shape[0] > self.max_tokens:  # truncar y garantizar EOS final
+            if ids.shape[0] > self.max_tokens:  # truncate and force a trailing EOS
                 ids = ids[: self.max_tokens].clone()
                 ids[-1] = self.eos_idx
             id_seqs.append(ids)
@@ -68,9 +68,9 @@ class SonarCELoss:
         return tgt_in, labels
 
     def loss(self, pred_emb: torch.Tensor, texts: list[str], lang: str) -> torch.Tensor:
-        """pred_emb: [B, 1024] (con grad). Devuelve CE escalar promediada sobre tokens no-pad.
+        """pred_emb: [B, 1024] (with grad). Return scalar CE averaged over non-pad tokens.
 
-        El gradiente fluye a pred_emb; el decoder queda congelado.
+        The gradient flows to pred_emb; the decoder stays frozen.
         """
         tgt_in, labels = self.tokenize(texts, lang)
         src = pred_emb.unsqueeze(1).to(device=self.device, dtype=self._param_dtype)  # [B,1,1024]
@@ -85,8 +85,8 @@ class SonarCELoss:
         )
 
     def loss_sum(self, pred_emb: torch.Tensor, texts: list[str], lang: str):
-        """Como loss() pero devuelve (suma_CE, n_tokens_no_pad) para agregar de forma
-        correcta entre batches (media ponderada por tokens, batch-invariante)."""
+        """Like loss() but returns (CE_sum, n_non_pad_tokens) to aggregate correctly
+        across batches (token-weighted mean, batch-invariant)."""
         tgt_in, labels = self.tokenize(texts, lang)
         src = pred_emb.unsqueeze(1).to(device=self.device, dtype=self._param_dtype)
         logits = self.model(src, self._BatchLayout.of(src), tgt_in, self._BatchLayout.of(tgt_in))

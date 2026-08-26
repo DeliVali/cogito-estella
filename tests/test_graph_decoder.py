@@ -31,6 +31,28 @@ def test_param_count_is_light():
     assert n < 5e6  # << 605M del decoder SONAR
 
 
+def test_graph_loss_decreases_on_overfit():
+    import torch
+    from cogito_estella.model.graph_decoder import graph_loss
+    torch.manual_seed(0)
+    cfg = GraphDecoderConfig(max_nodes=6, node_dim=64, node_vocab=32, n_relations=4)
+    dec = GraphDecoder(cfg)
+    opt = torch.optim.AdamW(dec.parameters(), lr=3e-3)
+    concept = torch.randn(4, cfg.concept_dim)
+    tgt_exist = torch.zeros(4, 6); tgt_exist[:, :3] = 1.0
+    tgt_labels = torch.randint(0, 32, (4, 6))
+    tgt_adj = torch.zeros(4, 4, 6, 6); tgt_adj[:, 0, 0, 1] = 1.0
+    first = last = None
+    for step in range(150):
+        out = dec(concept)
+        loss = graph_loss(out, tgt_exist, tgt_labels, tgt_adj)
+        opt.zero_grad(); loss.backward(); opt.step()
+        if step == 0:
+            first = loss.item()
+        last = loss.item()
+    assert last < first / 3
+
+
 def test_decode_triples_recovers_planted_graph():
     # construimos logits que codifican un triple claro: nodo0(label 3) --rel 1--> nodo1(label 7)
     B, K, V, R = 1, 4, 16, 4

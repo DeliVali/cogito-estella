@@ -4,6 +4,17 @@ Formato: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versionamiento: 
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-26
+
+Infraestructura del baseline de tokens + metodología matched-compute (para revisión antes de ejecutar).
+
+### Added
+- `cogito_estella.model.token_baseline.TokenTransformer`: baseline decoder-only de tokens que reutiliza los bloques del ConceptTransformer (misma receta: RoPE, RMSNorm, SwiGLU) → la comparación es de "moneda" (concepto vs token), no de arquitectura. Tests: forward, causalidad, overfit.
+- `docs/internal/specs/2026-08-26-matched-compute-metodologia.md`: protocolo riguroso para la comparación matched-compute (el experimento que define la tesis de eficiencia), con confounds, definición de compute y criterios de victoria. **Pendiente de revisión de Jeffrey antes de ejecutar** — la afirmación central no se produce sin validar la metodología.
+
+### Notes
+- Confirmado: con vocab NLLB (256206), el baseline de tokens está dominado por embedding+head (262M de 300M a dim 512) → la comparación debe ser matched-FLOPs, no matched-params.
+
 ## [0.2.2] - 2026-08-26
 
 Piloto de generalización + robustez de memoria.

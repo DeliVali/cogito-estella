@@ -75,13 +75,38 @@ def otsu_threshold(probs: torch.Tensor, nbins: int = 64) -> float:
     return float((k + 1) / nbins)
 
 
+def noise_floor_threshold(probs: torch.Tensor, q: float = 0.995, margin: float = 0.05,
+                          cap: float = 0.5) -> float:
+    """Sparsity-prior adjacency threshold: quantile noise ceiling + margin, capped.
+
+    Variance-driven thresholds (Otsu) are mass-weighted and fail on graph adjacency,
+    where true edges are <1% of the R*K*K cells: a saturated spike drags the split into
+    the upper gap (subtle edges lost), and ultra-sparse signal is variance-invisible
+    (split lands inside the noise). The sparsity prior inverts this: background
+    dominates by count, so its ceiling IS the q-quantile; anything above ceiling+margin
+    is signal. cap keeps the decision never stricter than the trained 0.5 boundary
+    (dense/saturated heads degrade gracefully to fixed thresholding).
+
+    Given a [R, K, K] tensor, q tightens to 1 - 1/R: at most K^2 of the R*K^2 cells can
+    be edges, so that quantile is guaranteed to sit at or below the noise ceiling.
+    """
+    if probs.dim() == 3:
+        q = min(q, 1.0 - 1.0 / probs.shape[0])
+    p = probs.flatten()
+    if p.numel() == 0:
+        return cap
+    return min(float(torch.quantile(p, q)) + margin, cap)
+
+
 def decode_triples(exist_logits, label_logits, adj_logits, threshold: float = 0.5,
                    adj_threshold: float | str | None = None):
     """Logits -> set of (label_i, relation, label_j) triples per sample.
 
     adj_threshold controls the adjacency decision: None reuses `threshold` (default,
     backward-compatible); a float overrides it; "otsu" derives a per-sample threshold
-    from that sample's adjacency probabilities (dynamic thresholding for dense graphs).
+    from that sample's adjacency probabilities; "noise_floor" uses the sparsity-prior
+    quantile threshold, robust to saturated-spike + subtle-edge mixtures and to
+    ultra-sparse signal (preferred for rich documents).
     """
     B, K = exist_logits.shape
     exist = torch.sigmoid(exist_logits) > threshold
@@ -92,6 +117,8 @@ def decode_triples(exist_logits, label_logits, adj_logits, threshold: float = 0.
     for b in range(B):
         if adj_threshold == "otsu":
             at = otsu_threshold(adj_p[b])
+        elif adj_threshold == "noise_floor":
+            at = noise_floor_threshold(adj_p[b])
         elif adj_threshold is None:
             at = threshold
         else:

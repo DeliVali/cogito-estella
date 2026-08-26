@@ -31,3 +31,6 @@ build/
 
 # --- HuggingFace cache local del proyecto (si se redirige aquí) ---
 .hf_cache/
+
+# --- Instrucciones locales del asistente (no rastreable) ---
+CLAUDE.md

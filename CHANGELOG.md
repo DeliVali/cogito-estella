@@ -5,6 +5,7 @@ Formato: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versionamiento: 
 ## [Unreleased]
 
 ### Added
+- `train_loop_ce`: entrenamiento con el objetivo CE propagada en `train_loop` de producción, con minibatch memory-safe y **checkpoints reanudables** (habilita corridas CE largas / GPU spot). Test con celoss simulado en CPU.
 - **exp002b** (gate con etiqueta compuesta): cierra la limitación de exp002. Con "malo = chrF<60 O ruptura estructural JSON", la tasa de fallo de JSON pasa de 0.8% a 99.8%, y el gate de superficie mejora a AUC 0.969 / 91% precisión @ 90% recall. Refuerza la viabilidad de la resolución adaptativa para el caso agéntico.
 - **exp007** (escalado del piloto): tiny (0.66M) y 39M dan la misma CE held-out (~7.88) → a escala de datos pequeña el cuello de botella son los datos, no la capacidad. El siguiente experimento debe escalar datos, no modelo.
 - **exp008** (escalar datos, 3 puntos): al escalar 160→800→2500 docs, la CE del modelo baja 7.89→7.58→7.29 y **cruza el baseline de media** (prior marginal) a 2500 docs (brecha +0.133→+0.052→−0.265). Confirma exp007 y demuestra que con suficientes datos el modelo aprende estructura secuencial generalizable que supera al prior.

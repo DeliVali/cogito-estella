@@ -1,7 +1,7 @@
-"""ConceptTransformer: decoder-only sobre secuencias de conceptos [B, T, 1024].
+"""ConceptTransformer: decoder-only over concept sequences [B, T, 1024].
 
-Patrón de capa estilo Llama 3 (RoPE, RMSNorm, SwiGLU), pero opera en el espacio
-continuo de SONAR en vez de tokens. La posición t predice el concepto t+1.
+Llama-3 layer pattern (RoPE, RMSNorm, SwiGLU) over the continuous SONAR space
+instead of tokens. Position t predicts concept t+1.
 """
 import torch
 import torch.nn as nn

@@ -17,11 +17,16 @@ EMB_DIM = 1024
 
 
 class ShardWriter:
-    def __init__(self, out_dir: str, shard_size: int = 100_000):
+    def __init__(self, out_dir: str, shard_size: int = 100_000, resume: bool = False):
         self.root = Path(out_dir)
         self.root.mkdir(parents=True, exist_ok=True)
         self.shard_size = shard_size
+        # reanudar: continuar la numeración desde los shards ya escritos
         self._shard_idx = 0
+        if resume:
+            existing = [p for p in self.root.iterdir()
+                        if p.is_dir() and (p / "embeddings.npy").exists()]
+            self._shard_idx = len(existing)
         self._embs: list[np.ndarray] = []
         self._metas: list[dict] = []
 

@@ -1,8 +1,7 @@
-"""Segmentación de texto en unidades tipo oración con SaT (wtpsplit).
+"""Sentence-like segmentation with SaT (wtpsplit).
 
-SaT (Segment any Text, Minixhofer et al. 2024) es robusto a estilo y corrupción,
-a diferencia del split por regex. Modelo por defecto: sat-3l-sm (mejor tradeoff
-velocidad/calidad para GPU de 12 GB, per README de wtpsplit).
+SaT (Segment any Text, Minixhofer et al. 2024) is robust to style and corruption,
+unlike regex splitting. Default sat-3l-sm (speed/quality tradeoff for a 12 GB GPU).
 """
 from cogito_estella.sampling import good_unit
 

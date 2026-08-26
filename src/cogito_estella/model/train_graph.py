@@ -1,9 +1,7 @@
-"""Loop de entrenamiento del GraphDecoder a escala, con checkpoints reanudables y
-registro de la curva de aprendizaje (para la fase de producción v0.5.0).
+"""GraphDecoder training loop: resumable checkpoints + learning-curve logging.
 
-Objetivo de grafo (barato, no-autorregresivo): pérdida = BCE existencia + CE etiquetas
-+ BCE adyacencia. Checkpoints cada `ckpt_every` pasos (config: 5% del total) para
-monitorear el aprendizaje y reanudar ante fallos.
+Graph objective (cheap, non-AR): loss = BCE(existence) + CE(labels) + BCE(adjacency).
+Checkpoints every `ckpt_every` steps for monitoring and crash recovery.
 """
 import json
 import math
@@ -29,8 +27,8 @@ def train_loop_graph(model, emb: np.ndarray, exist: np.ndarray, labels: np.ndarr
                      device: str = "cpu", out_dir: str | None = None, resume: bool = False,
                      log_every: int = 500, ckpt_every: int = 5000, seed: int = 0,
                      eval_fn=None) -> list[dict]:
-    """emb [N,1024]; exist [N,K]; labels [N,K]; adj [N,R,K,K]. eval_fn(model)->dict opcional
-    para registrar métricas (p. ej. Triple F1 held-out) en cada checkpoint."""
+    """emb [N,1024]; exist [N,K]; labels [N,K]; adj [N,R,K,K]. Optional eval_fn(model)->dict
+    logs metrics (e.g. held-out Triple F1) at each checkpoint."""
     torch.manual_seed(seed)
     model = model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.01)

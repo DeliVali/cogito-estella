@@ -92,6 +92,34 @@ def context_processing_flops(n_model: int, n_positions: int, dim: int) -> float:
     return 2 * n_model * n_positions + 2 * (n_positions ** 2) * dim
 
 
+def concept_graph_training_flops(n_ct: int, n_gdec: int, n_enc: int, n_concepts: int,
+                                 tokens_per_concept: float, n_epochs: float) -> FlopBreakdown:
+    """Modelo de conceptos con GraphDecoder (entrenable, NO-autorregresivo).
+    Clave: el graph decoder es O(1) en longitud (K nodos fijos), así que su costo por
+    concepto es 6·N_gdec (una pasada), SIN el factor L_tok que penaliza al decoder de texto.
+    """
+    concepts_processed = n_concepts * n_epochs
+    corpus_tokens = n_concepts * tokens_per_concept
+    return FlopBreakdown(
+        concept_transformer=6 * n_ct * concepts_processed,
+        sonar_decoder=6 * n_gdec * concepts_processed,   # graph decoder entrenable, O(1)
+        sonar_encoder_amortized=2 * n_enc * corpus_tokens,
+    )
+
+
+def concept_graph_inference_flops_per_concept(n_ct: int, n_gdec: int) -> float:
+    """FLOPs por CONCEPTO generado con GraphDecoder: 2·N_ct + 2·N_gdec (una pasada)."""
+    return 2 * n_ct + 2 * n_gdec
+
+
+def token_graph_extraction_flops_per_concept(n_tt: int, serialized_graph_tokens: float,
+                                             train: bool = False) -> float:
+    """Baseline de tokens extrayendo el grafo: genera el grafo SERIALIZADO (triples como
+    texto) autorregresivamente. Costo = (6 si train else 2)·N_tt·(tokens serializados)."""
+    factor = 6 if train else 2
+    return factor * n_tt * serialized_graph_tokens
+
+
 def flops_summary(n_ct, n_dec, n_enc, n_tt, n_concepts, tokens_per_concept, n_epochs) -> dict:
     """Reporte comparativo completo para un presupuesto dado."""
     ct = concept_training_flops(n_ct, n_dec, n_enc, n_concepts, tokens_per_concept, n_epochs)

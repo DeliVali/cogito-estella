@@ -38,6 +38,23 @@ def test_concept_inference_dominated_by_decoder():
     assert per_tok < 2 * 600_000_000 + 2 * 1_000_000  # + término pequeño del CT
 
 
+def test_graph_decoder_has_no_length_factor():
+    # el graph decoder es O(1): su costo NO escala con tokens_per_concept
+    bd = c.concept_graph_training_flops(n_ct=0, n_gdec=1000, n_enc=0, n_concepts=10,
+                                        tokens_per_concept=25, n_epochs=1)
+    assert bd.sonar_decoder == 6 * 1000 * 10   # sin factor 25
+    bd2 = c.concept_graph_training_flops(n_ct=0, n_gdec=1000, n_enc=0, n_concepts=10,
+                                         tokens_per_concept=100, n_epochs=1)
+    assert bd2.sonar_decoder == bd.sonar_decoder  # invariante a la longitud del texto
+
+
+def test_graph_decoder_much_cheaper_than_sonar_text():
+    # inferencia: graph decoder de 5M vs SONAR texto 605M×25 tokens
+    gr = c.concept_graph_inference_flops_per_concept(n_ct=100e6, n_gdec=5e6)
+    txt = 2 * 100e6 + 2 * 605e6 * 25   # concepto + SONAR texto
+    assert gr < txt / 50   # al menos 50× más barato por concepto
+
+
 def test_context_processing_favors_compression():
     # comprimir el contexto ~L_tok× reduce el costo de prefill (lineal y cuadrático)
     tokens, dim, L = 4096, 1024, 25

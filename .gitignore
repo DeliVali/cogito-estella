@@ -34,3 +34,6 @@ build/
 
 # --- Instrucciones locales del asistente (no rastreable) ---
 CLAUDE.md
+
+# --- Grafo de conocimiento local (graphify) ---
+graphify-out/

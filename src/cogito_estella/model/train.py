@@ -1,8 +1,8 @@
-"""Loop de entrenamiento del ConceptTransformer.
+"""ConceptTransformer training loop.
 
-v0.2.0: objetivo MSE (predecir el siguiente concepto) como validación de ingeniería
-del backbone y el pipeline de datos (overfit-test). El objetivo real (CE propagada
-por el decoder SONAR congelado) llega en v0.2.1. Checkpoints reanudables.
+v0.2.0: MSE objective (predict the next concept) as an engineering check on the
+backbone and the data pipeline (overfit test). The real objective (CE propagated
+through the frozen SONAR decoder) arrives in v0.2.1. Resumable checkpoints.
 """
 import json
 import math
@@ -15,8 +15,8 @@ import torch.nn.functional as F
 
 
 def build_sequences(dataset, seq_len: int) -> np.ndarray:
-    """Agrupa conceptos por doc_id (en orden) y los parte en chunks de seq_len.
-    No cruza fronteras de documento. Devuelve [n_seq, seq_len, 1024] float32.
+    """Group concepts by doc_id (in order) and split them into seq_len chunks.
+    Does not cross document boundaries. Returns [n_seq, seq_len, 1024] float32.
     """
     groups: dict[str, list[np.ndarray]] = {}
     order: list[str] = []
@@ -39,11 +39,11 @@ def build_sequences(dataset, seq_len: int) -> np.ndarray:
 
 
 def build_sequences_with_text(dataset, seq_len: int):
-    """Como build_sequences pero también devuelve los textos e idioma por concepto
-    (necesarios para el objetivo CE propagada). Agrupa por doc_id sin cruzar fronteras.
+    """Like build_sequences but also returns the per-concept texts and language
+    (needed for the propagated-CE objective). Groups by doc_id without crossing boundaries.
 
-    Devuelve (emb [n_seq, seq_len, 1024] float32, textos list[n_seq][seq_len],
-    idiomas list[n_seq]).
+    Returns (emb [n_seq, seq_len, 1024] float32, texts list[n_seq][seq_len],
+    langs list[n_seq]).
     """
     groups: dict[str, list] = {}
     order: list[str] = []
@@ -68,17 +68,17 @@ def build_sequences_with_text(dataset, seq_len: int):
 
 
 def next_concept_mse(model, batch: torch.Tensor) -> torch.Tensor:
-    """batch: [B, T, 1024]. Predice el concepto t+1 a partir de <=t."""
+    """batch: [B, T, 1024]. Predicts concept t+1 from <=t."""
     pred = model(batch)  # [B, T, 1024]
     return F.mse_loss(pred[:, :-1], batch[:, 1:])
 
 
 def next_concept_ce(model, batch: torch.Tensor, texts_batch, langs_batch, celoss) -> torch.Tensor:
-    """Objetivo real (SONAR-LLM): CE propagada por el decoder SONAR congelado.
+    """Real objective (SONAR-LLM): CE propagated through the frozen SONAR decoder.
 
-    batch: [B, T, 1024] embeddings. texts_batch: [B][T] textos de cada concepto.
-    langs_batch: [B] idioma por secuencia. Para cada posición t<T-1, el modelo
-    predice ê que debe decodificar al texto del concepto t+1.
+    batch: [B, T, 1024] embeddings. texts_batch: [B][T] each concept's text.
+    langs_batch: [B] language per sequence. For each position t<T-1, the model
+    predicts ê which must decode to the text of concept t+1.
     """
     pred = model(batch)  # [B, T, 1024]
     pred_flat, tgt_texts, tgt_langs = [], [], []
@@ -89,7 +89,7 @@ def next_concept_ce(model, batch: torch.Tensor, texts_batch, langs_batch, celoss
             tgt_texts.append(texts_batch[b][t + 1])
             tgt_langs.append(langs_batch[b])
     pred_emb = torch.stack(pred_flat)  # [(B*(T-1)), 1024]
-    # agrupar por idioma (el decoder necesita el lang tag correcto)
+    # group by language (the decoder needs the correct lang tag)
     total = torch.zeros((), device=pred_emb.device)
     n = 0
     for lang in set(tgt_langs):
@@ -105,14 +105,14 @@ def train_loop_ce(model, sequences_emb: np.ndarray, sequences_text: list, sequen
                   celoss, steps: int, lr: float, batch_size: int, device: str = "cpu",
                   out_dir: str | None = None, resume: bool = False, log_every: int = 50,
                   ckpt_every: int = 500, seed: int = 0) -> list[dict]:
-    """Entrenamiento con el objetivo REAL (CE propagada por SONAR congelado).
+    """Training with the REAL objective (CE propagated through frozen SONAR).
 
-    sequences_emb: [N, T, 1024] embeddings de concepto.
-    sequences_text: list[N] de list[T] textos por concepto.
-    sequences_lang: list[N] idioma por secuencia.
-    celoss: objeto con .loss(pred_emb, texts, lang) (p.ej. SonarCELoss).
-    Minibatch pequeño por paso (el decoder de vocab 256k limita la memoria).
-    Checkpoints reanudables (crítico para corridas largas / GPU spot).
+    sequences_emb: [N, T, 1024] concept embeddings.
+    sequences_text: list[N] of list[T] per-concept texts.
+    sequences_lang: list[N] language per sequence.
+    celoss: object with .loss(pred_emb, texts, lang) (e.g. SonarCELoss).
+    Small minibatch per step (the 256k-vocab decoder caps memory).
+    Resumable checkpoints (critical for long runs / spot GPUs).
     """
     torch.manual_seed(seed)
     model = model.to(device)
@@ -173,7 +173,7 @@ def train_loop(model, sequences: np.ndarray, steps: int, lr: float, batch_size: 
                resume: bool = False, log_every: int = 50, ckpt_every: int = 500,
                seed: int = 0) -> list[dict]:
     if loss != "mse":
-        raise NotImplementedError("v0.2.0 solo implementa MSE; CE propagada llega en v0.2.1")
+        raise NotImplementedError("v0.2.0 implements MSE only; propagated CE arrives in v0.2.1")
     torch.manual_seed(seed)
     model = model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.1)

@@ -11,6 +11,13 @@ The `modality` governs segmentation:
   prose/code -> SaT (sentences); toolcall -> the full structured unit (1 concept).
 
 Frozen 75/15/10 mix (% of docs).
+
+Provenance (generator-agnostic lineage). Every source below is an open dataset; no
+closed commercial API feeds the encode. Target-graph oracles are pluggable and split by
+modality: toolcall targets are exact-by-construction (graph_target.py, no model); code
+targets come from deterministic AST extraction (no LLM); only prose needs a semantic
+oracle, which is a swappable backend (e.g. a local open model such as DeepSeek/Llama-3).
+Distilled decoder weights therefore inherit only the chosen open oracle's lineage.
 """
 from dataclasses import dataclass
 

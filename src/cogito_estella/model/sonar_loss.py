@@ -83,3 +83,19 @@ class SonarCELoss:
             labels.reshape(-1),
             ignore_index=self.pad_idx,
         )
+
+    def loss_sum(self, pred_emb: torch.Tensor, texts: list[str], lang: str):
+        """Como loss() pero devuelve (suma_CE, n_tokens_no_pad) para agregar de forma
+        correcta entre batches (media ponderada por tokens, batch-invariante)."""
+        tgt_in, labels = self.tokenize(texts, lang)
+        src = pred_emb.unsqueeze(1).to(device=self.device, dtype=self._param_dtype)
+        logits = self.model(src, self._BatchLayout.of(src), tgt_in, self._BatchLayout.of(tgt_in))
+        logits = logits[:, 0]
+        ce_sum = F.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]).float(),
+            labels.reshape(-1),
+            ignore_index=self.pad_idx,
+            reduction="sum",
+        )
+        n_tokens = int((labels.reshape(-1) != self.pad_idx).sum().item())
+        return ce_sum, n_tokens

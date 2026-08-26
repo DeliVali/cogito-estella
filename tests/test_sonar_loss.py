@@ -35,6 +35,19 @@ def test_tokenize_respects_max_tokens_cap():
     assert labels.shape[1] <= 16
 
 
+def test_loss_sum_matches_mean():
+    """loss_sum / n_tokens debe coincidir con loss() (media por token) en un solo batch."""
+    from cogito_estella.model.sonar_loss import SonarCELoss
+
+    celoss = SonarCELoss(device="cpu")
+    emb = torch.randn(3, 1024)
+    texts = ["hello world here", "otra oracion de prueba", "third example sentence"]
+    with torch.no_grad():
+        mean = celoss.loss(emb, texts, "eng_Latn").item()
+        ce_sum, n = celoss.loss_sum(emb, texts, "eng_Latn")
+    assert abs(ce_sum.item() / n - mean) < 1e-3
+
+
 def test_gradient_flows_to_embedding_but_not_decoder():
     from cogito_estella.model.sonar_loss import SonarCELoss
 

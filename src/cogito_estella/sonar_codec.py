@@ -1,4 +1,4 @@
-"""Wrapper encode/decode del espacio SONAR. Carga perezosa; device auto."""
+"""SONAR encode/decode wrapper. Lazy load; auto device."""
 import torch
 
 
@@ -24,13 +24,12 @@ class SonarCodec:
         )
 
     def encode(self, texts: list[str], lang: str, batch_size: int = 32):
-        """Texto -> embeddings SONAR. Devuelve un tensor [N, 1024]."""
+        """Text -> SONAR embeddings [N, 1024]."""
         return self._enc.predict(texts, source_lang=lang, batch_size=batch_size)
 
     def decode(self, embeddings, lang: str, batch_size: int = 32, max_seq_len: int = 512) -> list[str]:
-        """Embeddings SONAR -> texto. Resiliente a OOM: ante CUDA OOM parte el
-        batch a la mitad recursivamente (unidades largas de código pueden agotar
-        la VRAM del decoder en GPUs de 12 GB)."""
+        """SONAR embeddings -> text. OOM-resilient: on CUDA OOM, recursively halves the
+        batch (long code units can exhaust the decoder's VRAM on 12 GB GPUs)."""
         import torch
 
         n = embeddings.shape[0] if hasattr(embeddings, "shape") else len(embeddings)
@@ -40,9 +39,8 @@ class SonarCodec:
         except torch.OutOfMemoryError:
             torch.cuda.empty_cache()
             if n <= 1:
-                # una sola unidad no cabe ni recortando el batch: recorta la longitud
                 return self._dec.predict(embeddings, target_lang=lang, batch_size=1,
-                                         max_seq_len=min(max_seq_len, 128))
+                                         max_seq_len=min(max_seq_len, 128))  # single unit: clip length
             half = n // 2
             left = self.decode(embeddings[:half], lang, batch_size=max(1, batch_size // 2),
                                max_seq_len=max_seq_len)

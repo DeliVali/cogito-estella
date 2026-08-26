@@ -1,24 +1,24 @@
-"""Construcción del GRAFO OBJETIVO para el paradigma de conocimiento estructurado.
+"""Target-graph construction for the structured-knowledge paradigm.
 
-Para tool-calls la estructura es exacta por construcción (no se necesita oráculo): un
-tool-call es un grafo estrella ROOT --relación--> valor. Vocab controlado derivado del
-generador sintético (sampling.synthetic_json_tools). Para PROSA, el oráculo es graphify
-(se parsea su JSON GraphRAG a triples) — no cubierto aquí.
+Tool-calls have exact structure by construction (no oracle needed): a tool-call is a
+star graph ROOT --relation--> value. Controlled vocab derived from the synthetic
+generator (sampling.synthetic_json_tools). For PROSE the oracle is graphify (its
+GraphRAG JSON is parsed to triples) — not covered here.
 
-Slots (canónicos, evitan el problema de asignación en el primer experimento):
-  slot 0 = ROOT ; slot r (1..R) = objeto de la relación r.
+Slots (canonical, sidestep the assignment problem in the first experiment):
+  slot 0 = ROOT ; slot r (1..R) = object of relation r.
 """
 import json
 from dataclasses import dataclass, field
 
 import numpy as np
 
-# Conjuntos de valores del generador sintético (sampling.synthetic_json_tools)
+# value sets from the synthetic generator (sampling.synthetic_json_tools)
 _TOOL_NAMES = ["search_web", "get_weather", "send_email", "create_event", "query_db", "run_code"]
 _QUERIES = ["clima CDMX", "flights to Madrid", "SELECT * FROM users", "reunión lunes"]
 _LIMITS = list(range(1, 51))
 _BOOLS = [False, True]
-# relaciones en orden de slot (slot r = objeto de la relación con índice r-1... ver abajo)
+# relations in slot order (slot r = object of relation index r-1)
 _RELATIONS = ["has_name", "has_query", "has_limit", "has_verbose"]
 
 
@@ -38,8 +38,8 @@ class ToolcallVocab:
 
 def build_toolcall_vocab(limit_max: int = 50, queries: list = None,
                          tools: list = None) -> ToolcallVocab:
-    """Vocab controlado. El espacio de LABELS puede ser mayor que los valores usados en
-    train (para el test duro: held-out con valores dentro del vocab pero no vistos en train)."""
+    """Controlled vocab. The LABEL space can be larger than the values used in train
+    (hard test: held-out values inside the vocab but unseen in train)."""
     queries = queries if queries is not None else _QUERIES
     tools = tools if tools is not None else _TOOL_NAMES
     labels = ["ROOT"]
@@ -74,8 +74,8 @@ def toolcall_to_triples(call: dict, v: ToolcallVocab) -> set:
 
 
 def toolcall_to_target(call: dict, v: ToolcallVocab, max_nodes: int = 8, n_relations: int = None):
-    """Devuelve (exist[K], labels[K], adj[R,K,K]) como np.float32 con slots canónicos.
-    n_relations permite padear a las R del decoder (las relaciones reales van en 0..3)."""
+    """Return (exist[K], labels[K], adj[R,K,K]) as np.float32 with canonical slots.
+    n_relations pads to the decoder's R (real relations occupy 0..3)."""
     K = max_nodes
     R = n_relations if n_relations is not None else v.n_relations
     exist = np.zeros(K, dtype=np.float32)
@@ -85,12 +85,12 @@ def toolcall_to_target(call: dict, v: ToolcallVocab, max_nodes: int = 8, n_relat
     # slot 0 = ROOT
     exist[0] = 1.0
     labels[0] = v.label2id["ROOT"]
-    # slot r+1 = objeto de la relación r
+    # slot r+1 = object of relation r
     for ri, rel in enumerate(_RELATIONS):
         slot = ri + 1
         exist[slot] = 1.0
         labels[slot] = v.label2id[_value_label(rel, args)]
-        adj[v.rel2id[rel], 0, slot] = 1.0   # ROOT --rel--> valor
+        adj[v.rel2id[rel], 0, slot] = 1.0   # ROOT --rel--> value
     return exist, labels, adj
 
 

@@ -25,6 +25,16 @@ def test_ce_discriminates_true_vs_random():
     assert ce_true < ce_rand / 5
 
 
+def test_tokenize_respects_max_tokens_cap():
+    from cogito_estella.model.sonar_loss import SonarCELoss
+
+    celoss = SonarCELoss(device="cpu", max_tokens=16)
+    long_text = "palabra " * 200  # tokeniza muy largo
+    tgt_in, labels = celoss.tokenize([long_text], "spa_Latn")
+    assert tgt_in.shape[1] <= 16
+    assert labels.shape[1] <= 16
+
+
 def test_gradient_flows_to_embedding_but_not_decoder():
     from cogito_estella.model.sonar_loss import SonarCELoss
 

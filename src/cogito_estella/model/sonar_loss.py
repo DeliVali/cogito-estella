@@ -19,7 +19,7 @@ class SonarCELoss:
     El decoder y el tokenizer se mantienen congelados (requires_grad_(False), eval).
     """
 
-    def __init__(self, device: torch.device | str = "cpu", dtype=None):
+    def __init__(self, device: torch.device | str = "cpu", dtype=None, max_tokens: int = 96):
         from fairseq2.nn import BatchLayout
         from sonar.inference_pipelines.text import EmbeddingToTextModelPipeline
 
@@ -32,9 +32,11 @@ class SonarCELoss:
             dtype=dtype,
         )
         self.device = dev
+        self.max_tokens = max_tokens  # tope de longitud: acota la memoria de logits (vocab 256k)
         self.model = pipe.model.eval().requires_grad_(False)
         self.tokenizer = pipe.tokenizer
         self.pad_idx = self.tokenizer.vocab_info.pad_idx
+        self.eos_idx = self.tokenizer.vocab_info.eos_idx
         self._encoders: dict[str, object] = {}
         # dtype de los parámetros del decoder (para castear el embedding de entrada);
         # cargar en bf16 reduce a la mitad la memoria de los logits de vocab 256k.
@@ -49,7 +51,13 @@ class SonarCELoss:
     def tokenize(self, texts: list[str], lang: str) -> tuple[torch.Tensor, torch.Tensor]:
         """texts -> (tgt_in, labels) con teacher forcing y padding. Ambos [B, T-1]."""
         enc = self._encoder(lang)
-        id_seqs = [enc(t) for t in texts]
+        id_seqs = []
+        for t in texts:
+            ids = enc(t)
+            if ids.shape[0] > self.max_tokens:  # truncar y garantizar EOS final
+                ids = ids[: self.max_tokens].clone()
+                ids[-1] = self.eos_idx
+            id_seqs.append(ids)
         maxlen = max(s.shape[0] for s in id_seqs)
         B = len(id_seqs)
         padded = torch.full((B, maxlen), self.pad_idx, dtype=torch.int64)

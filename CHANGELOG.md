@@ -4,6 +4,9 @@ Formato: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versionamiento: 
 
 ## [Unreleased]
 
+### Added
+- **exp002b** (gate con etiqueta compuesta): cierra la limitación de exp002. Con "malo = chrF<60 O ruptura estructural JSON", la tasa de fallo de JSON pasa de 0.8% a 99.8%, y el gate de superficie mejora a AUC 0.969 / 91% precisión @ 90% recall. Refuerza la viabilidad de la resolución adaptativa para el caso agéntico.
+
 ## [0.2.3] - 2026-08-26
 
 Infraestructura del baseline de tokens + metodología matched-compute (para revisión antes de ejecutar).

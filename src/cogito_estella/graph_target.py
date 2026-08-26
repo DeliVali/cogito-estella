@@ -36,11 +36,16 @@ class ToolcallVocab:
         return len(self.rel2id)
 
 
-def build_toolcall_vocab() -> ToolcallVocab:
+def build_toolcall_vocab(limit_max: int = 50, queries: list = None,
+                         tools: list = None) -> ToolcallVocab:
+    """Vocab controlado. El espacio de LABELS puede ser mayor que los valores usados en
+    train (para el test duro: held-out con valores dentro del vocab pero no vistos en train)."""
+    queries = queries if queries is not None else _QUERIES
+    tools = tools if tools is not None else _TOOL_NAMES
     labels = ["ROOT"]
-    labels += [f"tool:{t}" for t in _TOOL_NAMES]
-    labels += [f"query:{q}" for q in _QUERIES]
-    labels += [f"limit:{n}" for n in _LIMITS]
+    labels += [f"tool:{t}" for t in tools]
+    labels += [f"query:{q}" for q in queries]
+    labels += [f"limit:{n}" for n in range(1, limit_max + 1)]
     labels += [f"bool:{b}" for b in _BOOLS]
     label2id = {lab: i for i, lab in enumerate(labels)}
     rel2id = {r: i for i, r in enumerate(_RELATIONS)}

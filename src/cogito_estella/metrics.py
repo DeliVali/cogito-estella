@@ -1,4 +1,4 @@
-"""Métricas de fidelidad de reconstrucción. Sin GPU, sin red."""
+"""Reconstruction-fidelity metrics. No GPU, no network."""
 import json
 import re
 import statistics

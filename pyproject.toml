@@ -1,7 +1,7 @@
 [project]
 name = "cogito-estella"
 version = "0.0.1"
-description = "COGITO_ESTELLA — Large Concept Model con resolución adaptativa concepto↔token"
+description = "Cogito Estella — Latent Graph Engine: non-autoregressive concept-to-knowledge-graph decoding in the SONAR space"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 authors = [{ name = "Jeffrey Romero Del Val", email = "delvaljeffrey@gmail.com" }]

@@ -101,7 +101,7 @@ src/cogito_estella/
   compute.py                 # FLOP accounting (concept vs. tokens)
 ```
 
-*(Note: scaffolding, local unit-test infrastructure, and training logs are kept out of public tracking for corporate IP protection.)*
+*(Note: training data, experiment scaffolding, and logs are kept out of tracking; the unit-test suite is included.)*
 
 ---
 
@@ -129,7 +129,7 @@ uv sync
 
 Requires Python 3.12; SONAR/SaT weights download on first use.
 
-Experimental evidence: `experiments/*/REPORT.md`. Consolidated report: `docs/REPORTE-FINAL-paradigma-grafos.md`.
+Run the test suite with `pytest tests/`.
 
 ## License
 

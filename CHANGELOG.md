@@ -1,92 +1,100 @@
 # Changelog
 
-Formato: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versionamiento: [SemVer 2.0.0](https://semver.org/).
+Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
-## [Unreleased]
+## [0.4.4] - 2026-08-26
+
+Consolidates 0.3.0 → 0.4.4: the structured-knowledge (concept → graph) paradigm, its fidelity benchmarks, and the literal-recovery data-level fixes.
 
 ### Added
-- **Paradigma de conocimiento estructurado (concepto → grafo):** `GraphDecoder` no-autorregresivo (concepto → nodos + adyacencia etiquetada, presets 1.4M/5.8M/29M), `graph_metrics` (triple F1, GED-proxy, tool-call F1), FLOPs del paradigma en `compute`, y **exp011**: benchmark en RTX 5070 → GraphDecoder **1074× más rápido** en wall-clock (0.013 vs 13.96 ms/concepto) y 144× en FLOPs que el decoder SONAR de texto. Metodología en `docs/internal/specs/2026-08-26-paradigma-grafos-metodologia.md` (pendiente de congelar). Decisión de producto: modelo de conocimiento estructurado, no de prosa.
-- `train_loop_ce`: entrenamiento con el objetivo CE propagada en `train_loop` de producción, con minibatch memory-safe y **checkpoints reanudables** (habilita corridas CE largas / GPU spot). Test con celoss simulado en CPU.
-- **exp002b** (gate con etiqueta compuesta): cierra la limitación de exp002. Con "malo = chrF<60 O ruptura estructural JSON", la tasa de fallo de JSON pasa de 0.8% a 99.8%, y el gate de superficie mejora a AUC 0.969 / 91% precisión @ 90% recall. Refuerza la viabilidad de la resolución adaptativa para el caso agéntico.
-- **exp007** (escalado del piloto): tiny (0.66M) y 39M dan la misma CE held-out (~7.88) → a escala de datos pequeña el cuello de botella son los datos, no la capacidad. El siguiente experimento debe escalar datos, no modelo.
-- **exp008** (escalar datos, 4 puntos + 3 semillas): al escalar 160→800→2500→5000 docs, la CE del modelo baja 7.89→7.58→7.29→6.72 y la brecha con el prior marginal cambia de signo y CRECE (+0.133→+0.052→−0.265→−0.934). La ventaja no solo aparece sino que crece con datos. El cruce a 2500 docs es robusto a 3 semillas (brechas −0.265/−0.294/−0.108).
+- **Structured-knowledge paradigm (concept → graph):** non-autoregressive `GraphDecoder` (concept → nodes + labeled adjacency, presets 1.4M/5.8M/29M), `graph_metrics` (triple F1, GED-proxy, tool-call F1), paradigm FLOP accounting in `compute`, and **exp011**: RTX 5070 benchmark → GraphDecoder **1074× faster** wall-clock (0.013 vs 13.96 ms/concept) and 144× in FLOPs than the SONAR text decoder. Product decision: a structured-knowledge model, not a prose model.
+- **exp012** (graph fidelity): trained GraphDecoder recovers tool-call graphs from SONAR embeddings at **Triple F1 = 1.000** held-out, including never-seen combinations — the same content where the 605M text decoder produced 0.3% valid JSON.
+- **exp013/exp014** (numeric ceiling + token baseline): single-label targets fail on unseen exact integers (0.000); the char-level token baseline reads them verbatim (0.983). Verdict framed per field: graphs win logical structure at 36× fewer FLOPs / 315× less wall-clock; tokens win the exact literal.
+- **exp016** (digits-as-nodes + digit spacing): decomposing integers into digit nodes recovers unseen exact integers at 0.956; spacing the digits in the source text ("400" → "4 0 0") raises it to **0.983**. Includes the honest correction: the exp013 "SONAR does not encode the value" conclusion was an artifact of the linear probe and single-label target.
+- **exp017** (chars-as-nodes): the same trick mapped to open-vocab strings — 0.899 exact on unseen short strings (L=4, spaced); cost advantage holds at **2881×** even at L=32. Long arbitrary strings (L≥12) remain copy-channel territory.
+- Production preprocessing (`preprocess`): language-aware code sanitization (pygments), secret anonymization (curated regexes), prose corruption filtering (unicodedata), and gated digit spacing.
+- Multilingual concept factory (`multilingual_factory`): 14 open sources normalized to a canonical `DocRecord`, frozen 75/15/10 prose/code/tool-call mix, modality-aware segmentation, resumable at-scale encoding.
+- `train_loop_ce`: training with the propagated-CE objective in the production `train_loop`, memory-safe minibatching and **resumable checkpoints** (enables long CE runs / spot GPUs). Test with a simulated celoss on CPU.
+- **exp002b** (composite-label gate): closes the exp002 limitation. With "bad = chrF<60 OR structural JSON break", the JSON failure rate goes from 0.8% to 99.8%, and the surface gate improves to AUC 0.969 / 91% precision @ 90% recall. Reinforces adaptive-resolution viability for the agentic case.
+- **exp007** (pilot scaling): tiny (0.66M) and 39M give the same held-out CE (~7.88) → at small data scale the bottleneck is data, not capacity. The next experiment must scale data, not the model.
+- **exp008** (data scaling, 4 points + 3 seeds): scaling 160→800→2500→5000 docs drops model CE 7.89→7.58→7.29→6.72 and the gap vs the marginal prior changes sign and GROWS (+0.133→+0.052→−0.265→−0.934). The advantage not only appears but grows with data. The 2500-doc crossover is robust across 3 seeds (gaps −0.265/−0.294/−0.108).
 
 ### Fixed
-- **Bug de métrica en la evaluación de generalización** (`eval_ce`): ponderaba la CE por número de conceptos en vez de por tokens, haciéndola dependiente del batch. Corregido con `SonarCELoss.loss_sum` (bits/token batch-invariante, test `test_loss_sum_matches_mean`). **Esto corrige el veredicto de exp006**: el modelo bate la persistencia pero NO la media a escala piloto (antes se afirmaba, erróneamente, que batía ambos).
+- **Metric bug in the generalization evaluation** (`eval_ce`): CE was weighted by number of concepts instead of tokens, making it batch-dependent. Fixed with `SonarCELoss.loss_sum` (batch-invariant bits/token, test `test_loss_sum_matches_mean`). **This corrects the exp006 verdict**: the model beats persistence but NOT the mean at pilot scale (it was previously, and wrongly, claimed to beat both).
 
 ## [0.2.3] - 2026-08-26
 
-Infraestructura del baseline de tokens + metodología matched-compute (para revisión antes de ejecutar).
+Token-baseline infrastructure + matched-compute methodology (for review before execution).
 
 ### Added
-- `cogito_estella.model.token_baseline.TokenTransformer`: baseline decoder-only de tokens que reutiliza los bloques del ConceptTransformer (misma receta: RoPE, RMSNorm, SwiGLU) → la comparación es de "moneda" (concepto vs token), no de arquitectura. Tests: forward, causalidad, overfit.
-- `docs/internal/specs/2026-08-26-matched-compute-metodologia.md`: protocolo riguroso para la comparación matched-compute (el experimento que define la tesis de eficiencia), con confounds, definición de compute y criterios de victoria. **Pendiente de revisión de Jeffrey antes de ejecutar** — la afirmación central no se produce sin validar la metodología.
+- `cogito_estella.model.token_baseline.TokenTransformer`: decoder-only token baseline reusing the ConceptTransformer blocks (same recipe: RoPE, RMSNorm, SwiGLU) → the comparison is about the "currency" (concept vs token), not the architecture. Tests: forward, causality, overfit.
+- Rigorous protocol for the matched-compute comparison (the experiment that defines the efficiency thesis), with confounds, compute definition and victory criteria, subject to review before execution.
 
 ### Notes
-- Confirmado: con vocab NLLB (256206), el baseline de tokens está dominado por embedding+head (262M de 300M a dim 512) → la comparación debe ser matched-FLOPs, no matched-params.
+- Confirmed: with the NLLB vocab (256206), the token baseline is dominated by embedding+head (262M of 300M at dim 512) → the comparison must be matched-FLOPs, not matched-params.
 
 ## [0.2.2] - 2026-08-26
 
-Piloto de generalización + robustez de memoria.
+Generalization pilot + memory robustness.
 
 ### Added
-- **exp006** (piloto de generalización): el modelo entrenado con CE generaliza a documentos no vistos — CE held-out 7.90 vs persistencia 9.76 vs media 9.18. Piloto a escala pequeña (0.66M, 160 docs); el baseline de tokens matched-compute es el siguiente hito.
-- `SonarCELoss.max_tokens` (default 96): trunca unidades largas para acotar la memoria de logits (vocab 256k) — una unidad patológica inflaba el padding de todo el minibatch.
+- **exp006** (generalization pilot): the CE-trained model generalizes to unseen documents — held-out CE 7.90 vs persistence 9.76 vs mean 9.18. Small-scale pilot (0.66M, 160 docs); the matched-compute token baseline is the next milestone.
+- `SonarCELoss.max_tokens` (default 96): truncates long units to bound logits memory (256k vocab) — one pathological unit inflated the padding of the whole minibatch.
 
 ## [0.2.1] - 2026-08-26
 
-El objetivo de entrenamiento REAL: cross-entropy propagada por el decoder SONAR congelado (mecanismo de SONAR-LLM).
+The REAL training objective: cross-entropy propagated through the frozen SONAR decoder (SONAR-LLM mechanism).
 
 ### Added
-- `cogito_estella.model.sonar_loss.SonarCELoss`: computa CE con teacher forcing a través del decoder SONAR congelado; el gradiente fluye al embedding predicho, no al decoder. Carga en bf16 para memoria.
-- `cogito_estella.model.train.next_concept_ce`: objetivo CE next-concept (aplana [B,T] conceptos, agrupa por idioma para el lang tag correcto).
-- **exp005** (overfit con CE real): tiny reduce CE 16.67→4.62 (−72%) en la RTX 5070 → el objetivo científico funciona end-to-end. Test de cordura: embedding verdadero CE~0.3, aleatorio CE~20.
+- `cogito_estella.model.sonar_loss.SonarCELoss`: computes CE with teacher forcing through the frozen SONAR decoder; the gradient flows to the predicted embedding, not the decoder. Loads in bf16 for memory.
+- `cogito_estella.model.train.next_concept_ce`: next-concept CE objective (flattens [B,T] concepts, groups by language for the correct lang tag).
+- **exp005** (overfit with real CE): tiny reduces CE 16.67→4.62 (−72%) on the RTX 5070 → the scientific objective works end-to-end. Sanity check: true embedding CE~0.3, random CE~20.
 
 ### Notes
-- `train_loop` de producción sigue en MSE; la integración de la CE (con dataset que acarree textos) y el manejo de EOS son v0.2.2.
+- The production `train_loop` remains on MSE; CE integration (with a text-carrying dataset) and EOS handling are v0.2.2.
 
 ## [0.2.0] - 2026-08-26
 
-Backbone del modelo de conceptos + loop de entrenamiento, validados end-to-end.
+Concept-model backbone + training loop, validated end-to-end.
 
 ### Added
-- `cogito_estella.model.transformer.ConceptTransformer`: decoder-only estilo Llama 3 (RoPE, RMSNorm, SwiGLU, atención causal) operando en el espacio SONAR de 1024 dims; presets tiny/39M/100M/300M.
-- `cogito_estella.model.train`: loop de entrenamiento (MSE next-concept), AdamW + cosine LR + grad clip + bf16, checkpoints reanudables; `build_sequences` agrupa conceptos por doc sin cruzar fronteras.
-- **exp003** (overfit smoke test): tiny (6221×) y 39M (6162×) sobreajustan embeddings SONAR reales en la RTX 5070 → pipeline completo validado.
+- `cogito_estella.model.transformer.ConceptTransformer`: Llama-3-style decoder-only (RoPE, RMSNorm, SwiGLU, causal attention) operating in the 1024-dim SONAR space; tiny/39M/100M/300M presets.
+- `cogito_estella.model.train`: training loop (MSE next-concept), AdamW + cosine LR + grad clip + bf16, resumable checkpoints; `build_sequences` groups concepts by doc without crossing boundaries.
+- **exp003** (overfit smoke test): tiny (6221×) and 39M (6162×) overfit real SONAR embeddings on the RTX 5070 → full pipeline validated.
 
 ### Notes
-- v0.2.0 valida ingeniería (forward/backward/pipeline), no ciencia. El objetivo real (CE propagada por el decoder SONAR congelado, estilo SONAR-LLM) es v0.2.1.
+- v0.2.0 validates engineering (forward/backward/pipeline), not science. The real objective (CE propagated through the frozen SONAR decoder, SONAR-LLM style) is v0.2.1.
 
 ## [0.1.0] - 2026-08-26
 
-Fábrica de conceptos (segmentación SaT + almacén) y validación de la resolución adaptativa.
+Concept factory (SaT segmentation + store) and adaptive-resolution validation.
 
 ### Added
-- `cogito_estella.segmenter.Segmenter`: wrapper SaT (sat-3l-sm, half en GPU) robusto a estilo/corrupción.
-- `cogito_estella.concept_store`: shards memory-mapped (embedding fp16 + texto crudo + metadatos) con `ShardWriter`/`ConceptDataset`.
-- `cogito_estella.gate_features`: 9 features de superficie baratas para el gate.
-- **exp001** (ablación de segmentación): SaT rescata el código (chrF 39.9→89.0, colapso 12.4%→0%); confound longitud/frontera documentado.
-- **exp002** (viabilidad del gate): el fallo de round-trip es predecible con AUC 0.93 desde features de superficie (superan al embedding SONAR) → base empírica de la resolución adaptativa.
+- `cogito_estella.segmenter.Segmenter`: SaT wrapper (sat-3l-sm, half precision on GPU) robust to style/corruption.
+- `cogito_estella.concept_store`: memory-mapped shards (fp16 embedding + raw text + metadata) with `ShardWriter`/`ConceptDataset`.
+- `cogito_estella.gate_features`: 9 cheap surface features for the gate.
+- **exp001** (segmentation ablation): SaT rescues code (chrF 39.9→89.0, collapse 12.4%→0%); length/boundary confound documented.
+- **exp002** (gate feasibility): round-trip failure is predictable at AUC 0.93 from surface features (they beat the SONAR embedding) → empirical basis for adaptive resolution.
 
 ### Fixed
-- `SonarCodec` resiliente a CUDA OOM (split adaptativo del batch) al decodificar unidades largas de código en GPU de 12 GB.
+- `SonarCodec` resilient to CUDA OOM (adaptive batch splitting) when decoding long code units on a 12 GB GPU.
 
 ### Changed
-- `SonarCodec` expone `encode`/`decode` por separado (roundtrip los compone).
+- `SonarCodec` exposes `encode`/`decode` separately (roundtrip composes them).
 
 ## [0.0.1] - 2026-08-25
 
 ### Added
-- Scaffold del repositorio: estructura, estándares de versionamiento (SemVer, Keep a Changelog, Conventional Commits).
-- `cogito_estella.metrics`: chrF, exact match, fidelidad numérica, validez/equivalencia JSON.
-- `cogito_estella.sampling`: muestreo por categoría (sintéticos deterministas, streaming de HuggingFace, fallback de código local).
-- `cogito_estella.sonar_codec.SonarCodec`: wrapper round-trip sobre SONAR (fairseq2).
-- **Experimento cero** (`experiments/exp000_roundtrip/`): fidelidad round-trip de SONAR medida en 5 categorías, N=300. Ver `REPORT.md` para resultados y decisión.
+- Repository scaffold: structure, versioning standards (SemVer, Keep a Changelog, Conventional Commits).
+- `cogito_estella.metrics`: chrF, exact match, numeric fidelity, JSON validity/equivalence.
+- `cogito_estella.sampling`: category-based sampling (deterministic synthetics, HuggingFace streaming, local code fallback).
+- `cogito_estella.sonar_codec.SonarCodec`: round-trip wrapper over SONAR (fairseq2).
+- **Experiment zero**: SONAR round-trip fidelity measured across 5 categories, N=300.
 
 ### Fixed
-- El agrupamiento de muestras para el round-trip debe ser por (categoría, idioma), no solo por categoría — de lo contrario SONAR traduce en vez de reconstruir.
+- Round-trip sample grouping must be by (category, language), not category alone — otherwise SONAR translates instead of reconstructing.
 
 ### Findings
-- Prosa en inglés y español: SONAR reconstruye con alta fidelidad (chrF mediana 93.0 / 80.4) — camino de encoder congelado validado para v0.1-v0.3, con vigilancia sobre la brecha es vs. en.
-- JSON/tool-calls: fidelidad textual alta (chrF 86.3) pero validez estructural casi nula (json_equiv 0.3%) — confirma que la resolución adaptativa concepto↔token es necesaria, no opcional, para salida estructurada.
-- Código: degradación severa (chrF mediana 49.5) con un modo de colapso catastrófico ante contenido fuera de distribución (comandos de shell/seguridad, APIs de Windows).
+- English and Spanish prose: SONAR reconstructs with high fidelity (median chrF 93.0 / 80.4) — frozen-encoder path validated for v0.1–v0.3, with a watch on the es-vs-en gap.
+- JSON/tool-calls: high textual fidelity (chrF 86.3) but near-zero structural validity (json_equiv 0.3%) — confirms concept↔token adaptive resolution is necessary, not optional, for structured output.
+- Code: severe degradation (median chrF 49.5) with a catastrophic collapse mode on out-of-distribution content (shell/security commands, Windows APIs).

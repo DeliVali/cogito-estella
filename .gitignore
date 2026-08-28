@@ -1,4 +1,4 @@
-# --- Datos: el dataset parseado NUNCA se versiona ni se publica ---
+# --- Data: parsed datasets are never versioned ---
 data/
 *.parquet
 *.safetensors
@@ -6,7 +6,7 @@ data/
 *.npz
 *.arrow
 
-# --- Modelos y checkpoints ---
+# --- Models and checkpoints ---
 checkpoints/
 runs/
 wandb/
@@ -23,30 +23,16 @@ __pycache__/
 dist/
 build/
 
-# --- Entorno / herramientas ---
+# --- Environment / tooling ---
 .env
 .envrc
 *.log
 .ipynb_checkpoints/
-
-# --- HuggingFace cache local del proyecto (si se redirige aquí) ---
 .hf_cache/
 
-# --- Instrucciones locales del asistente (no rastreable) ---
+# --- Local-only working files ---
 CLAUDE.md
-
-# --- Grafo de conocimiento local (graphify) ---
 graphify-out/
 .claude/
-
-# --- Repo público: solo arquitectura/funcionalidad del código + reportes ---
-# Tests fuera del repo público (se conservan localmente)
-tests/
-# Scaffolding de experimentos: scripts, resultados y logs fuera; se CONSERVAN los REPORT.md
-experiments/*/*.py
-experiments/*/*.json
-experiments/*/*.log
-experiments/*/last.pt
-
-# Metodología interna / know-how (solo local): specs, planes, tooling de proceso
-docs/internal/
+docs/
+experiments/

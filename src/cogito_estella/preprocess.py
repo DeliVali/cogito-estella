@@ -130,7 +130,7 @@ def preprocess_record(rec, space_code_digits: bool = True):
     text = rec.text
     if rec.modality == "code":
         # extract only the pure code blocks (CodeFeedback ships with surrounding prose)
-        default_lang = "python" if rec.source == "code_py" else None
+        default_lang = "python" if rec.source.startswith("code_py") else None
         parts = [sanitize_code(code, lang=lg or default_lang) for lg, code in extract_code_blocks(text)]
         text = "\n".join(p for p in parts if p.strip())
         text = anonymize_secrets(text)  # no digit spacing: digits are structural in code

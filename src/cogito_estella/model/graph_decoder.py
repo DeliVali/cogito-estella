@@ -16,6 +16,8 @@ class GraphDecoderConfig:
     node_dim: int = 128      # d
     node_vocab: int = 512    # V
     n_relations: int = 16    # R
+    trunk_layers: int = 0    # GELU+LayerNorm MLP depth before slot projection (0 = legacy)
+    trunk_dim: int = 2048
 
 
 class GraphDecoder(nn.Module):
@@ -23,7 +25,19 @@ class GraphDecoder(nn.Module):
         super().__init__()
         cfg = cfg or GraphDecoderConfig()
         self.cfg = cfg
-        self.to_nodes = nn.Linear(cfg.concept_dim, cfg.max_nodes * cfg.node_dim)
+        # deep trunk is the safe capacity axis under a frozen encoder (exp039-042:
+        # prose 0.192 -> 0.592; encoder-side capacity overfits instead)
+        if cfg.trunk_layers > 0:
+            dims = [cfg.concept_dim] + [cfg.trunk_dim] * cfg.trunk_layers
+            layers = []
+            for i in range(cfg.trunk_layers):
+                layers += [nn.Linear(dims[i], dims[i + 1]), nn.GELU(), nn.LayerNorm(dims[i + 1])]
+            self.trunk = nn.Sequential(*layers)
+            slot_in = cfg.trunk_dim
+        else:
+            self.trunk = None
+            slot_in = cfg.concept_dim
+        self.to_nodes = nn.Linear(slot_in, cfg.max_nodes * cfg.node_dim)
         self.node_exist = nn.Linear(cfg.node_dim, 1)
         self.node_label = nn.Linear(cfg.node_dim, cfg.node_vocab)
         self.rel = nn.Parameter(torch.empty(cfg.n_relations, cfg.node_dim, cfg.node_dim))
@@ -31,6 +45,8 @@ class GraphDecoder(nn.Module):
 
     def forward(self, concept: torch.Tensor) -> dict:
         B = concept.shape[0]
+        if self.trunk is not None:
+            concept = self.trunk(concept)
         nodes = self.to_nodes(concept).view(B, self.cfg.max_nodes, self.cfg.node_dim)
         exist_logits = self.node_exist(nodes).squeeze(-1)          # [B, K]
         label_logits = self.node_label(nodes)                      # [B, K, V]

@@ -139,3 +139,28 @@ def test_decode_triples_otsu_recovers_low_logit_edges():
     al[0, 0, 1, 2] = -0.85
     assert decode_triples(el, ll, al)[0] == set()               # fixed 0.5 collapses
     assert decode_triples(el, ll, al, adj_threshold="otsu")[0] == {(0, 0, 1), (1, 0, 2)}
+
+
+def test_trunk_default_is_legacy_shape_and_params():
+    import torch
+    from cogito_estella.model.graph_decoder import GraphDecoder, GraphDecoderConfig
+    dec = GraphDecoder(GraphDecoderConfig())
+    assert dec.trunk is None
+    out = dec(torch.randn(3, 1024))
+    assert out["exist_logits"].shape == (3, 8)
+    assert out["label_logits"].shape == (3, 8, 512)
+
+
+def test_trunk_deepens_and_preserves_output_contract():
+    import torch
+    from cogito_estella.model.graph_decoder import GraphDecoder, GraphDecoderConfig
+    cfg = GraphDecoderConfig(node_dim=64, node_vocab=100, n_relations=5,
+                             trunk_layers=3, trunk_dim=256)
+    dec = GraphDecoder(cfg)
+    assert dec.trunk is not None and len(dec.trunk) == 9  # 3 x (Linear, GELU, LN)
+    out = dec(torch.randn(2, 1024))
+    assert out["exist_logits"].shape == (2, 8)
+    assert out["label_logits"].shape == (2, 8, 100)
+    assert out["adj_logits"].shape == (2, 5, 8, 8)
+    out["exist_logits"].sum().backward()
+    assert dec.trunk[0].weight.grad is not None

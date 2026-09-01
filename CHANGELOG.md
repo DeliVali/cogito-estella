@@ -2,6 +2,14 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.8.1] - 2026-09-01
+
+### Added
+- CI workflow (test + wheel build) and PyPI trusted-publishing release workflow. First version distributed on PyPI.
+
+### Changed
+- sonar-stack tests skip cleanly on core-only installs.
+
 ## [0.8.0] - 2026-09-01
 
 ### Added

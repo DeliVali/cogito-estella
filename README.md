@@ -146,9 +146,9 @@ Champion checkpoints ship via [GitHub Releases](../../releases) and
 | `vocab-prose.json` | entity/relation vocabulary (20k/60) | — |
 
 ```bash
-uv sync
+pip install "cogito-estella[sonar]"     # or: uv sync (from a clone)
 # download cogito-prose-candidates-ft.pt + vocab-prose.json next to quickstart.py
-uv run python quickstart.py
+python quickstart.py
 ```
 
 `quickstart.py` encodes two raw sentences and prints their decoded triples in one

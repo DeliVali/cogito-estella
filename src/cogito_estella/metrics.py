@@ -3,10 +3,17 @@ import json
 import re
 import statistics
 
-from sacrebleu.metrics import CHRF
-
 _NUM_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
-_CHRF = CHRF()
+_CHRF = None
+
+
+def _chrf_metric():
+    # lazy: sacrebleu ships in the [data] extra, not the core runtime
+    global _CHRF
+    if _CHRF is None:
+        from sacrebleu.metrics import CHRF
+        _CHRF = CHRF()
+    return _CHRF
 
 
 def normalize_ws(text: str) -> str:
@@ -18,7 +25,7 @@ def exact_match(ref: str, hyp: str) -> bool:
 
 
 def chrf(ref: str, hyp: str) -> float:
-    return _CHRF.sentence_score(hyp, [ref]).score
+    return _chrf_metric().sentence_score(hyp, [ref]).score
 
 
 def number_fidelity(ref: str, hyp: str) -> float | None:

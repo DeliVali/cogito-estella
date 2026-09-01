@@ -2,6 +2,27 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.7.0] - 2026-09-01
+
+Consolidates 0.5.0 → 0.7.0: modality champions across tool-calls, code, and prose; the entity-conditioned decoder; validated ensemble recipes.
+
+### Added
+- **`CandidateGraphDecoder`** (entity-conditioned prose head): caller-supplied candidates as cross-attention queries over learned concept views; output space restricted by construction, elastic COO adjacency, low-rank bilinear relations (rank 64), calibrated decode with force-top1 recall floor. End-to-end prose triple F1 **0.827** as a 5-seed ensemble, validated on a never-touched held-out slice (119,911-sample pool, selection and validation slices fully separated).
+- **Deep trunk** for `GraphDecoder` (`trunk_layers`/`trunk_dim`): GELU+LayerNorm MLP before slot projection — the safe capacity axis under a frozen encoder. Open-vocab prose 0.192 → 0.592 across the width/depth/data ladder, overfit-free.
+- **Open-vocab prose stack**: 3-seed ensemble with a trained self-proposal cascade as empty-decode fallback → F1 **0.6514** (virgin-slice validated; up from 0.5922 single-model).
+- **LoRA-adapted SONAR for code** (r=32, α=64, manual injection into fairseq2 sharded layers): code→graph 0.652 → **0.781** with the fixed-threshold decode sweep; low-rank adaptation shown to act as protective regularization (full-rank unfreeze degrades to 0.633).
+- `noise_floor_threshold` adjacency decoding: sparsity-prior quantile threshold, dominates variance-based Otsu on sparse graphs (8/8 vs 3/8 stress scenarios); `decode_triples(adj_threshold=...)` strategy selector.
+- Script-safety gate for digit spacing (`SPACING_UNSAFE_LANGS`) and roofline/bandwidth accounting in `compute` (arithmetic intensity, crossover batch, encoder-toll and copy-ceiling analyses).
+
+### Changed
+- README rewritten: per-modality benchmark table with split protocol, measured latency/compute footprint per configuration, production integration patterns.
+- Unit-test suite grown to **113 tests** (trunk, candidate decoder, decode strategies, audit additions).
+
+### Findings (negative results, documented)
+- Specialized losses (Focal, AST reward) and hybrid encoder unfreezing degrade code F1; BCE + LoRA + early stop is the production recipe.
+- Character-level entity generation from sentence embeddings fails (0.006): exact surface recovery needs decoder-scale capacity; selection over candidates replaces generation.
+- LLM-oracle distillation with per-sentence labels fails (0.263): dense but inconsistent labels are unlearnable — label consistency dominates label density.
+
 ## [0.4.4] - 2026-08-26
 
 Consolidates 0.3.0 → 0.4.4: the structured-knowledge (concept → graph) paradigm, its fidelity benchmarks, and the literal-recovery data-level fixes.

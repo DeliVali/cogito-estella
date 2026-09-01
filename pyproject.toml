@@ -1,6 +1,6 @@
 [project]
 name = "cogito-estella"
-version = "0.0.1"
+version = "0.7.0"
 description = "Cogito Estella — Latent Graph Engine: non-autoregressive concept-to-knowledge-graph decoding in the SONAR space"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

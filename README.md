@@ -1,4 +1,4 @@
-# Cogito Estella: Latent Graph Engine (v0.7.0)
+# Cogito Estella: Latent Graph Engine (v0.8.1)
 
 Non-autoregressive inference backend that decodes SONAR (Meta) semantic embeddings
 directly into knowledge graphs, bypassing token-based text decoding entirely.

@@ -1,136 +1,145 @@
-# Cogito Estella: Latent Graph Engine (v0.4.4)
+# Cogito Estella: Latent Graph Engine (v0.7.0)
 
-An ultra-efficient inference backend that decodes SONAR (Meta) semantic embeddings directly into non-autoregressive knowledge graphs, sidestepping the bottleneck and cost of traditional token-based LLMs.
+Non-autoregressive inference backend that decodes SONAR (Meta) semantic embeddings
+directly into knowledge graphs, bypassing token-based text decoding entirely.
+Mapped, trained, and validated end-to-end on a single RTX 5070 (12 GB).
 
-Mapped and validated end-to-end on a single RTX 5070 (12 GB).
+## Why
 
-## Why?
-Running GraphRAG with traditional autoregressive LLMs over millions of documents destroys any infrastructure budget. Translating latent concepts back into structured text (JSON) is massively inefficient and prone to formatting errors.
-
-**Cogito Estella changes the paradigm:** instead of decoding text, it projects logical adjacency matrices in a single inference pass.
-
-* **1074× faster** wall-clock than decoding prose token by token.
-* **Drastic FLOP reduction:** $1.2 \times 10^7$ vs. $3.0 \times 10^{10}$ for classical decoding.
-* **Perfect Structural Fidelity (Triple F1 = 1.000)** on held-out, independent tool-calls.
+GraphRAG over millions of documents with autoregressive LLMs is budget-prohibitive:
+per-token decoding, per-token API pricing, and malformed-output retry loops. Cogito
+Estella emits the full adjacency structure in one dense forward pass — structurally
+valid by construction, at consumer-hardware cost.
 
 ---
 
 ## Inference Architecture
 
-The engine is a **5.8M-parameter** non-autoregressive `GraphDecoder` bolted onto Meta's multilingual latent space.
-
-Input: a concept embedding $e \in \mathbb{R}^{1024}$ (a sentence segmented with SaT and projected into SONAR space). There is no time dimension — a single pass emits the full graph over $K$ fixed node slots.
+The engine attaches compact non-autoregressive decoder heads (5.8M–45M parameters)
+to Meta's frozen multilingual latent space. Input: a concept embedding
+$e \in \mathbb{R}^{1024}$ (sentence segmented with SaT, projected by SONAR). No time
+dimension — a single pass emits the complete graph.
 
 ```
 e ∈ ℝ^1024
-  │  W_in ∈ ℝ^{1024 × K·d}
+  │  deep trunk (optional): 1–3 × [Linear → GELU → LayerNorm]
   ▼
-N ∈ ℝ^{K × d}          # K node slots
+N ∈ ℝ^{K × d}          # K node slots (fixed grid) or C candidates (elastic)
   ├─ existence   s ∈ ℝ^K            = σ(W_s · N)
-  ├─ labels      ℓ ∈ ℝ^{K × V}      = W_ℓ · N
-  └─ adjacency   A ∈ ℝ^{R × K × K}
+  ├─ labels      ℓ ∈ ℝ^{K × V}      = W_ℓ · N          (open-vocab head)
+  └─ adjacency   A ∈ ℝ^{R × K × K}  = N_i^T W_r N_j    (low-rank: W_r = U_r V_r^T)
 ```
 
-`medium` config (5.8M): $K = 12$ nodes, $d = 256$, vocab $V = 2048$, $R = 32$ relations.
+Two production head families:
 
-Adjacency is a per-relation bilinear score. For node $i$, node $j$, relation $r$:
+* **`GraphDecoder`** (open-vocab): fixed K-slot grid, V-way label softmax per slot,
+  bilinear adjacency. Optional deep GELU/LayerNorm trunk (`trunk_layers`).
+* **`CandidateGraphDecoder`** (entity-conditioned): caller supplies candidate
+  entities (text scan and/or graph-memory nodes); candidates act as cross-attention
+  queries over learned concept views via `nn.Embedding` lookup. Output space is
+  restricted by construction — zero vocabulary leakage. Elastic COO adjacency sized
+  to the candidate list; low-rank bilinear relations (rank 64); calibrated decode
+  with a force-top1 recall floor.
 
-$$A_{r,i,j} = N_i^{\top} W_r N_j, \qquad W_r \in \mathbb{R}^{d \times d}$$
-
-The output graph is the set of triples $(\ell_i, r, \ell_j)$ where $\sigma(s_i), \sigma(s_j) > \tau$ and $\sigma(A_{r,i,j}) > \tau$, with $\tau = 0.5$.
-
-**Training objective** — structural loss, no sampling, no teacher forcing:
-
-$$\mathcal{L} = \mathrm{BCE}(\hat{s}, s) \;+\; \underbrace{\frac{1}{\sum s}\sum_k s_k \cdot \mathrm{CE}(\hat{\ell}_k, \ell_k)}_{\text{label CE, masked by existence}} \;+\; \mathrm{BCE}(\hat{A}, A)$$
+Training objective — structural loss, no sampling, no teacher forcing:
+$\mathcal{L} = \mathrm{BCE}(\hat{s}, s) + \mathrm{CE}_{\text{masked}}(\hat{\ell}, \ell) + \mathrm{BCE}(\hat{A}, A)$.
 
 ---
 
-## Performance and Cost per Concept (RTX 5070)
+## Metrics & Experimental Benchmark Summary
 
-| Metric | This Work (GraphDecoder 5.8M) | Baseline (TokenTransformer) | SONAR Text Decoder (605M) |
-| :--- | :--- | :--- | :--- |
-| **Latency (wall-clock)** | **0.013 ms** | 4.1 ms (315× slower) | 13.96 ms (1074× slower) |
-| **Compute (FLOPs)** | **$1.2 \times 10^7$** | $4.1 \times 10^8$ | $3.0 \times 10^{10}$ |
-| **Structural Validity** | **100% (F1 = 1.0)** | 100% (F1 = 1.0) | 0.3% (JSON collapse) |
+Held-out evaluation, split **by combination** (an entity/relation combination never
+seen in training, eliminating duplicate leakage). Prose numbers are validated on
+virgin slices of a 119,911-sample held-out pool that took no part in any model,
+threshold, or ensemble selection; structured modalities use their own
+combination-held splits (tool-calls: 12,147 held-out concepts spanning 240 unseen
+combinations).
 
-Wall-clock (1074×) beats the FLOP ratio (144×): the text decoder is autoregressive (token-by-token loop + beam, poor GPU utilization); the `GraphDecoder` is a single dense matmul.
+| Modality | Triple F1 | Recipe |
+| :--- | :--- | :--- |
+| Tool-calling / API control | **1.000** | 24.3M `GraphDecoder`, deterministic decode, zero-leakage combination split |
+| Source code structure (Python AST oracle) | **0.781** | LoRA-adapted SONAR (r=32) + decoder, fixed-threshold decode |
+| Entity-conditioned prose (restricted candidates) | **0.827** | 5-seed `CandidateGraphDecoder` ensemble, cross-attention entity conditioning, calibrated decode + force-top1 |
+| Open-vocab prose (fallback, no candidates) | **0.6514** | 3-seed `GraphDecoder` ensemble + trained cascade as empty-decode fallback |
+
+Oracles: exact-by-construction JSON (tool-calls), native Python `ast` parser (code),
+deterministic dependency-parse SVO (prose). Adjacency thresholding ships three
+strategies (`fixed`, `otsu`, `noise_floor`); the sparsity-prior `noise_floor`
+dominates variance-based Otsu on sparse graphs (8/8 vs 3/8 stress scenarios).
+
+## Core Latency & Compute Footprint
+
+Measured on consumer silicon (RTX 5070, 12 GB, CUDA 12.8), batch 1024:
+
+* Non-autoregressive forward pass: **0.013 ms per sentence concept**
+  (single `CandidateGraphDecoder`; 0.052 ms for the 24.3M open-vocab production
+  config; ~0.06 ms for the 5-model prose ensemble). 269–1074× faster wall-clock
+  than autoregressive text decoding of the same content.
+* Context state: **336 KB per active prefill thread** vs. 2.1 GB KV-cache on a
+  standard 7B autoregressive model at 4k context — a **6,400× reduction**.
+* FLOP reduction: **36×** against a matched char-level token baseline (dense
+  structural blocks) up to **2,881×** for exact string literals via the parallel
+  char-grid mapping (digits/characters as nodes, no copy loop).
+* Encode throughput (SaT + sanitization + SONAR): ~273 concepts/s; storage density
+  ~2.19 KB/concept (fp16).
+
+## Production Integration Patterns
+
+* **GraphRAG ingestion pipelines** — vector-to-knowledge-graph indexing without
+  per-token commercial API calls; graphs land as COO triples ready for `MERGE`
+  into any property-graph store, with per-edge provenance.
+* **Non-autoregressive tool dispatchers** — raw text streams decoded into typed
+  call structures in one pass; output is structurally valid by construction
+  (no JSON repair, no syntax-breaking retries).
+* **Incremental AST repository tracking** — hook file-save events to re-encode
+  changed units and merge live call/import dependency sub-graphs into memory.
+* **Multilingual agent memory shards** — chat history compressed into
+  language-agnostic 1024-d concepts (SONAR, 200 languages) and decoded to a
+  queryable graph; entity-conditioning accepts the agent's existing graph nodes
+  as candidates.
 
 ---
 
 ## The Map of Literals (Open-Vocab Handling)
 
-Continuous embeddings inherently struggle to extract exact values (v0.4.2 documented a **MAE of 36** on held-out integers). A linear Ridge probe on the embedding, interpolation split over $[1, 500]$:
+Continuous embeddings lose exact values (measured: MAE 36, 1.5% exact on held-out
+integers via linear probe). The ceiling breaks at the data level, not the model:
 
-```
-MAE = 36        (chance ≈ 125)
-exact match = 1.5%
-```
-
-SONAR encodes the number's approximate magnitude (MAE 36 < chance) but not the exact digit. The system breaks this technical ceiling by redesigning the physical data instead of enlarging the model — the atomic-spacing trick:
-
-* **Logical structure:** native graph mapping (F1 ~1.0).
-* **Integers:** digits-as-nodes + spaced text (`"400"` → `"4 0 0"`). **98.3%** exact accuracy on unseen values.
-* **Short strings ($\leq$ 4 chars):** characters-as-nodes + spacing. **89.9%** exact accuracy (open vocabulary).
-* **Long arbitrary strings:** automatic fallback to a hybrid copy channel via pointers (the only autoregressive case).
-
-A single unseen integer becomes a new combination of known digit-nodes — compositional generalization. The residual is data coverage (digit-by-position seen in training), not a SONAR limit.
-
----
+* **Integers:** digits-as-nodes + atomic spacing (`"400"` → `"4 0 0"`): **98.3%**
+  exact on unseen values.
+* **Short strings (≤4 chars):** characters-as-nodes: **89.9%** exact, open vocab.
+* **Long arbitrary strings:** hybrid copy channel (the only autoregressive path).
 
 ## Core Structure (`src/cogito_estella/`)
 
-The public repository exposes the 18 clean architecture modules, ready for integration:
-
-* `GraphDecoder` & `ConceptTransformer` — the core of the latent pipeline.
-* `sonar_loss` & `compute.py` — the math harness for the propagated cross-entropy (CE) loss.
-* `preprocess` — rigid sanitization factory and atomic spacing.
-
 ```
 src/cogito_estella/
-  model/graph_decoder.py     # non-AR GraphDecoder + graph_loss + decode_triples
-  model/transformer.py       # ConceptTransformer (RoPE, RMSNorm, SwiGLU)
-  model/token_baseline.py    # token baseline (matched-FLOP comparison)
-  model/sonar_loss.py        # cross-entropy propagated through the frozen SONAR decoder
-  model/train_graph.py       # training loop with resumable checkpoints
-  sonar_codec.py             # SONAR encode/decode, OOM-resilient
-  segmenter.py               # SaT (multilingual segmentation)
-  multilingual_factory.py    # canonicalized ingestion (DocRecord) from 14 sources
-  preprocess.py              # sanitization: code (pygments), secrets (regex), prose
-  graph_target.py            # target-graph construction (tool-calls)
-  graph_metrics.py           # Triple F1, GED proxy, tool-call F1
-  compute.py                 # FLOP accounting (concept vs. tokens)
+  model/graph_decoder.py       # non-AR GraphDecoder + deep trunk + decode strategies
+  model/candidate_decoder.py   # entity-conditioned head: cross-attention, COO, force-top1
+  model/transformer.py         # ConceptTransformer (RoPE, RMSNorm, SwiGLU)
+  model/token_baseline.py      # matched-FLOP token baseline
+  model/sonar_loss.py          # CE propagated through the frozen SONAR decoder
+  model/train_graph.py         # resumable training loop
+  sonar_codec.py               # SONAR encode/decode, OOM-resilient
+  segmenter.py                 # SaT multilingual segmentation
+  multilingual_factory.py      # canonicalized ingestion from open sources
+  preprocess.py                # sanitization + atomic spacing (script-gated)
+  graph_target.py              # target-graph construction
+  graph_metrics.py             # Triple F1, GED proxy, tool-call F1
+  compute.py                   # FLOP/bandwidth accounting, roofline
 ```
 
-*(Note: training data, experiment scaffolding, and logs are kept out of tracking; the unit-test suite is included.)*
-
----
-
-## Hardware
-
-| | |
-| :--- | :--- |
-| GPU | NVIDIA RTX 5070 · 12 GB · Blackwell · CUDA 12.8 |
-| Latent encoder / decoder | SONAR `text_sonar_basic` (Meta), 200 languages, frozen |
-| Segmenter | SaT `sat-3l-sm` (wtpsplit), half-precision on GPU |
-| Encode throughput (full pipeline) | ~273 concepts/s (SaT + SONAR + sanitization) |
-| Density | ~2.19 KB / concept (fp16, 1024-d) |
-| Training (24.3M production config) | batch 1024 → 6.72 GB peak VRAM (measured) |
-| Inference | 0.013 ms / concept |
-
-## Massive Deployment Status
-
-Currently running the resumable production pipeline for the massive encode of the target corpus: **3 million multilingual documents**. Pipeline state is recorded deterministically through local, power-failure-proof checkpoints.
-
-## Installation
+Training data, experiment scaffolding, and logs are untracked; the unit-test suite
+ships with the repository — **113 tests**, fully reproducible offline:
 
 ```bash
 uv sync
+uv run pytest tests/
 ```
 
 Requires Python 3.12; SONAR/SaT weights download on first use.
 
-Run the test suite with `pytest tests/`.
-
 ## License
 
-Distributed under the **Apache License 2.0**. See the `LICENSE` file for details on relational-patent protection and commercial use.
+Distributed under the **Apache License 2.0**. See the `LICENSE` file for details on
+relational-patent protection and commercial use.

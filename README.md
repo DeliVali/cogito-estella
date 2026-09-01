@@ -98,6 +98,53 @@ Measured on consumer silicon (RTX 5070, 12 GB, CUDA 12.8), batch 1024:
   queryable graph; entity-conditioning accepts the agent's existing graph nodes
   as candidates.
 
+## Use Cases
+
+* **Agent long-term memory ("second brain")** — every message, note, or document an
+  agent touches becomes graph triples in a property store (Neo4j, SQLite); sessions
+  end, knowledge persists and stays queryable.
+* **GraphRAG grounding** — answer-time retrieval over structured facts instead of
+  (or alongside) vector similarity; the LLM cites edges that exist, reducing
+  hallucinated recall.
+* **Tool-call observability** — agent traces decoded at F1 1.000 make "which tools
+  touched service X" an exact graph query, at near-zero compute.
+* **Codebase intelligence** — call/import dependency graphs over whole repositories
+  at a cost where re-indexing on every save is affordable.
+* **Multilingual knowledge consolidation** — SONAR's language-agnostic space lets
+  documents in 200 languages land in one shared graph.
+* **Log & trace mining** — high-volume streams (support tickets, incident reports,
+  transcripts) structured continuously on one consumer GPU, where per-token LLM
+  extraction is cost-prohibitive.
+* **Compliance & provenance KBs** — every edge carries source metadata; audits
+  answer "where does this fact come from" by construction.
+
+## Pretrained Weights & Quickstart
+
+Champion checkpoints ship via [GitHub Releases](../../releases) and
+[Hugging Face (`DeliVali/cogito-estella`)](https://huggingface.co/DeliVali/cogito-estella):
+
+| Asset | Modality | F1 |
+| :--- | :--- | :--- |
+| `cogito-toolcalls-graphdecoder.pt` | tool-calls | 1.000 |
+| `cogito-code-lora-adapters.pt` | code (LoRA + decoder) | 0.781 |
+| `cogito-prose-candidates-{ft,cal,base,s2,s3}.pt` | entity-conditioned prose (5-seed ensemble) | 0.827 |
+| `cogito-prose-openvocab{,-s4,-s5}.pt` + `cogito-prose-cascade-fallback.pt` | open-vocab prose stack | 0.6514 |
+| `vocab-prose.json` | entity/relation vocabulary (20k/60) | — |
+
+```bash
+uv sync
+# download cogito-prose-candidates-ft.pt + vocab-prose.json next to quickstart.py
+uv run python quickstart.py
+```
+
+`quickstart.py` encodes two raw sentences and prints their decoded triples in one
+non-autoregressive pass.
+
+**Weight licensing:** all from-scratch decoder heads (GraphDecoder,
+CandidateGraphDecoder, trunks, ensembles) are Apache-2.0. The code-modality LoRA
+adapters modify Meta's SONAR encoder, whose weights are distributed under
+CC-BY-NC 4.0 — the adapted encoder inherits those non-commercial terms.
+
 ---
 
 ## The Map of Literals (Open-Vocab Handling)

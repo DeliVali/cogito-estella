@@ -4,6 +4,8 @@ Non-autoregressive inference backend that decodes SONAR (Meta) semantic embeddin
 directly into knowledge graphs, bypassing token-based text decoding entirely.
 Mapped, trained, and validated end-to-end on a single RTX 5070 (12 GB).
 
+![Cogito Estella demo: text to knowledge graph in one forward pass, with cross-lingual extraction](assets/demo.gif)
+
 ## Why
 
 GraphRAG over millions of documents with autoregressive LLMs is budget-prohibitive:

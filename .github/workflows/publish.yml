@@ -1,0 +1,19 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write     # PyPI Trusted Publishing (OIDC, no token secrets)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Build distributions
+        run: uv build
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1

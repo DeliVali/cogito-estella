@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install (core + data extra, CPU torch)
+        run: uv sync --extra data
+        env:
+          UV_TORCH_BACKEND: cpu
+      - name: Run test suite
+        run: uv run pytest tests/ -q
+      - name: Build wheel
+        run: uv build

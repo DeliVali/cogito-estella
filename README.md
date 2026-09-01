@@ -1,4 +1,4 @@
-# Cogito Estella: Latent Graph Engine (v0.8.1)
+# Cogito Estella: Latent Graph Engine (v0.9.0)
 
 Non-autoregressive inference backend that decodes SONAR (Meta) semantic embeddings
 directly into knowledge graphs, bypassing token-based text decoding entirely.
@@ -131,6 +131,25 @@ Measured on consumer silicon (RTX 5070, 12 GB, CUDA 12.8), batch 1024:
   extraction is cost-prohibitive.
 * **Compliance & provenance KBs** — every edge carries source metadata; audits
   answer "where does this fact come from" by construction.
+
+## Global Summarization (`GraphSummarizer`)
+
+GraphRAG-style sensemaking where the expensive stage (per-chunk extraction) costs zero
+LLM tokens; the LLM only writes per-community summaries (~10 calls per book instead of
+~600), with automatic entity-grounding rejection of unverifiable output:
+
+```python
+from cogito_estella.graph_summary import GraphSummarizer
+
+gs = GraphSummarizer(llm_fn=my_llm)          # any callable: prompt -> str
+report = gs.summarize(triples, top_k=8)      # triples from the extractor
+for c in report:
+    print(c["accepted"], c["grounding"], c["top_entities"][:5], c["summary"])
+```
+
+Validated on a full novel: coherent thematic clusters at ~155x fewer LLM tokens than
+per-chunk extraction pipelines; low-cohesion clusters are gated out and summaries that
+mention entities absent from their cluster are rejected automatically.
 
 ## Pretrained Weights & Quickstart
 

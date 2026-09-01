@@ -2,6 +2,12 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.9.0] - 2026-09-01
+
+### Added
+- **`GraphSummarizer`** (`graph_summary`): GraphRAG-style global sensemaking over extracted triples at ~155x fewer LLM tokens (validated novel-scale). Deterministic pipeline: PPMI edge weighting (chance-level co-occurrence self-suppresses, no stoplists), Louvain communities, scale-free cohesion gating, salience-ranked evidence (frequency x PMI — keeps protagonists, drops generic hubs and rare trivia), and entity-level grounding verification with automatic rejection. The summarizer LLM is caller-injected (`llm_fn`), model-agnostic.
+- `networkx` added to core dependencies (pure Python).
+
 ## [0.8.1] - 2026-09-01
 
 ### Added

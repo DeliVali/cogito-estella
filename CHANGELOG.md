@@ -2,6 +2,15 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.8.0] - 2026-09-01
+
+### Added
+- `CogitoGraphExtractor` (LlamaIndex/LangChain-ready graph connector): single-checkpoint and 5-checkpoint prob-averaged ensemble modes with the validated operating points as defaults (single 0.15/0.15; ensemble 0.1/0.8 + force-top1); spaCy candidate scan with naive fallback; one-encoder-call `extract_batch`; Cypher MERGE mapping with per-edge provenance (`[graph]` extra). Cross-lingual extraction verified (Spanish input, English entity vocabulary).
+- Standalone tool-call observability demo (`tools/demo_observability.py`): raw async stream -> verbatim JSON triples, split encoder/decoder timings.
+
+### Changed
+- Lean packaging: core runtime is torch+numpy; SONAR, corpus tooling, and the neo4j driver move to `[sonar]`/`[data]`/`[graph]` extras.
+
 ## [0.7.0] - 2026-09-01
 
 Consolidates 0.5.0 → 0.7.0: modality champions across tool-calls, code, and prose; the entity-conditioned decoder; validated ensemble recipes.

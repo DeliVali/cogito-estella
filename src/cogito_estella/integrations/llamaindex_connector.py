@@ -1,0 +1,153 @@
+"""Plug-and-play graph extractor for LlamaIndex / LangChain pipelines.
+
+Three lines to production:
+
+    extractor = CogitoGraphExtractor("cogito-prose-candidates-ft.pt", "vocab-prose.json")
+    triples = extractor.extract("The committee approved the new budget.")
+    extractor.to_neo4j(driver, triples, source="doc-42")
+
+No hard dependency on either framework: `extract` takes plain text (what both hand
+you), returns `(subject, relation, object)` string triples. `to_neo4j` maps them to
+standard Cypher MERGE statements with per-edge provenance; the neo4j driver ships in
+the `[graph]` extra. SONAR (the `[sonar]` extra) is loaded lazily on first call.
+"""
+import json
+from pathlib import Path
+
+import torch
+
+from cogito_estella.model.candidate_decoder import (
+    CandidateDecoderConfig, CandidateGraphDecoder, decode_triples_coo)
+
+_CYPHER = (
+    "MERGE (a:Entity {name: $s}) "
+    "MERGE (b:Entity {name: $o}) "
+    "MERGE (a)-[r:REL {type: $r, source: $src}]->(b)"
+)
+
+
+class CogitoGraphExtractor:
+    """text -> knowledge-graph triples in one non-autoregressive pass."""
+
+    def __init__(self, checkpoint, vocab_path: str, device: str = None,
+                 threshold: float = None, adj_threshold: float = None,
+                 force_top1: bool = True):
+        """`checkpoint`: a single path, or a list of paths for prob-averaged ensemble
+        decoding (the validated 0.827 recipe ships as 5 checkpoints). Defaults follow
+        the validated operating points: single model (0.15, 0.15); ensemble (0.1, 0.8)
+        — precision-heavy edges with force-top1 as the recall floor."""
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        vocab = json.loads(Path(vocab_path).read_text())
+        self.ent2id = vocab["ent2id"]
+        self.rels = sorted(vocab["rel2id"], key=vocab["rel2id"].get)
+        is_ens = not isinstance(checkpoint, (str, Path)) and len(list(checkpoint)) > 1
+        self.threshold = threshold if threshold is not None else (0.1 if is_ens else 0.15)
+        self.adj_threshold = (adj_threshold if adj_threshold is not None
+                              else (0.8 if is_ens else 0.15))
+        self.force_top1 = force_top1
+        paths = [checkpoint] if isinstance(checkpoint, (str, Path)) else list(checkpoint)
+        self.decs = []
+        for path in paths:
+            dec = CandidateGraphDecoder(
+                CandidateDecoderConfig(n_relations=len(self.rels))).to(self.device)
+            ck = torch.load(path, map_location=self.device, weights_only=False)
+            dec.load_state_dict(ck["dec"])
+            dec.eval()
+            self.decs.append(dec)
+        self._pipe = None
+
+    def _encode(self, texts, lang):
+        if self._pipe is None:
+            from sonar.inference_pipelines.text import TextToEmbeddingModelPipeline
+            self._pipe = TextToEmbeddingModelPipeline(
+                encoder="text_sonar_basic_encoder", tokenizer="text_sonar_basic_encoder",
+                device=torch.device(self.device))
+        return self._pipe.predict(texts, source_lang=lang).to(self.device)
+
+    def _scanner(self):
+        # spaCy scan (NOUN/PROPN lemmas) when available — matches the recall-1.0
+        # production protocol; degrades to token matching with naive singularization
+        if not hasattr(self, "_nlp"):
+            try:
+                import spacy
+                self._nlp = spacy.load("en_core_web_sm", disable=["ner"])
+            except Exception:
+                self._nlp = False
+        return self._nlp
+
+    def _candidates(self, text, extra):
+        nlp = self._scanner()
+        cand = []
+        if nlp:
+            for tok in nlp(text):
+                if tok.pos_ in ("NOUN", "PROPN"):
+                    lem = tok.lemma_.lower()
+                    if lem in self.ent2id and lem not in cand:
+                        cand.append(lem)
+        else:
+            seen = set()
+            for raw in text.split():
+                t = raw.strip(".,;:!?()[]\"'").lower()
+                for form in (t, t[:-1] if t.endswith("s") else None,
+                             t[:-2] if t.endswith("es") else None):
+                    if form and form in self.ent2id and form not in seen:
+                        seen.add(form); cand.append(form)
+                        break
+        for e in extra or []:
+            if e in self.ent2id and e not in cand:
+                cand.append(e)
+        return cand
+
+    def _decode(self, emb: torch.Tensor, cand: list) -> list:
+        ids = torch.tensor([[self.ent2id[c] for c in cand]], device=self.device)
+        mask = torch.ones(1, len(cand), dtype=torch.bool, device=self.device)
+        eps, aps = [], []
+        with torch.no_grad():
+            for dec in self.decs:
+                out = dec(emb[None].float().to(self.device), ids, mask)
+                eps.append(torch.sigmoid(out["exist_logits"]))
+                aps.append(torch.sigmoid(out["adj_logits"]))
+        ep = torch.stack(eps).mean(0).clamp(1e-6, 1 - 1e-6)
+        ap = torch.stack(aps).mean(0).clamp(1e-6, 1 - 1e-6)
+        coo = decode_triples_coo(torch.logit(ep).cpu(), torch.logit(ap).cpu(),
+                                 mask.cpu(), threshold=self.threshold,
+                                 adj_threshold=self.adj_threshold,
+                                 force_top1=self.force_top1)[0]
+        return [(cand[i], self.rels[r], cand[j]) for i, r, j in sorted(coo)]
+
+    def extract(self, text: str, candidates: list = None, lang: str = "eng_Latn",
+                embedding: torch.Tensor = None) -> list:
+        """Returns [(subject, relation, object), ...] as plain strings."""
+        cand = self._candidates(text, candidates)
+        if len(cand) < 2:
+            return []
+        emb = embedding if embedding is not None else self._encode([text], lang)[0]
+        return self._decode(emb, cand)
+
+    def extract_batch(self, texts: list, candidates: list = None,
+                      lang: str = "eng_Latn") -> list:
+        """Batched ingestion: ONE encoder call for N texts. Returns a list of triple
+        lists aligned with `texts`. `candidates` is an optional per-text list."""
+        cands = [self._candidates(t, (candidates or [None] * len(texts))[i])
+                 for i, t in enumerate(texts)]
+        emb = self._encode(texts, lang)
+        results = []
+        for i, cand in enumerate(cands):
+            if len(cand) < 2:
+                results.append([])
+                continue
+            results.append(self._decode(emb[i], cand))
+        return results
+
+    def to_neo4j(self, driver, triples: list, source: str = "unknown",
+                 database: str = None):
+        """MERGE triples into Neo4j with per-edge provenance. `driver` is a
+        neo4j.Driver (pip install cogito-estella[graph])."""
+        with driver.session(database=database) as session:
+            for s, r, o in triples:
+                session.run(_CYPHER, s=s, r=r, o=o, src=source)
+
+    def to_cypher(self, triples: list, source: str = "unknown") -> list:
+        """Driver-free variant: returns (query, params) pairs for any executor."""
+        return [(_CYPHER, {"s": s, "r": r, "o": o, "src": source})
+                for s, r, o in triples]

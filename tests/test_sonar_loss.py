@@ -1,4 +1,8 @@
 import pytest
+
+pytest.importorskip("fairseq2")  # [sonar] extra; skipped on core-only installs
+
+import pytest
 import torch
 
 pytestmark = pytest.mark.integration

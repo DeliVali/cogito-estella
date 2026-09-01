@@ -1,5 +1,9 @@
 import pytest
 
+pytest.importorskip("wtpsplit")  # [sonar] extra; skipped on core-only installs
+
+import pytest
+
 pytestmark = pytest.mark.integration
 
 

@@ -1,5 +1,9 @@
 import pytest
 
+pytest.importorskip("sonar")  # [sonar] extra; skipped on core-only installs
+
+import pytest
+
 from cogito_estella import metrics as m
 
 pytestmark = pytest.mark.integration

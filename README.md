@@ -69,6 +69,18 @@ deterministic dependency-parse SVO (prose). Adjacency thresholding ships three
 strategies (`fixed`, `otsu`, `noise_floor`); the sparsity-prior `noise_floor`
 dominates variance-based Otsu on sparse graphs (8/8 vs 3/8 stress scenarios).
 
+<details>
+<summary><b>Demo: tool-call observability (F1 = 1.000)</b> — raw agent stream → exact per-event call graphs</summary>
+
+![Tool-call observability demo: raw functioncall stream decoded into exact star graphs per event](assets/demo_tools.gif)
+</details>
+
+<details>
+<summary><b>Demo: code → call/import graph (F1 = 0.781)</b> — one line can yield multiple edges</summary>
+
+![Code demo: imports and calls decoded into a dependency graph, including two edges from one nested call](assets/demo_code.gif)
+</details>
+
 ## Core Latency & Compute Footprint
 
 Measured on consumer silicon (RTX 5070, 12 GB, CUDA 12.8), batch 1024:

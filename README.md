@@ -173,6 +173,14 @@ python quickstart.py
 `quickstart.py` encodes two raw sentences and prints their decoded triples in one
 non-autoregressive pass.
 
+**Concurrent ingestion**: call `CogitoGraphExtractor.ensure_schema(driver)` once per
+database before parallel writers — it creates idempotent uniqueness constraints that
+make concurrent `MERGE`s deterministic (without them, simultaneous ingestion can race
+and duplicate nodes). Migrating a pre-existing database: deduplicate first; constraint
+creation fails on existing duplicates. Debugging: `extract(..., return_scores=True)`
+returns every candidate's existence probability and every edge's confidence, with
+forced floor edges flagged.
+
 **Exact literals** (phones, hashes, IDs, precise amounts) never round-trip through the
 embedding: `extract_with_literals` detects them deterministically in the source text and
 `literals_to_neo4j` stores them verbatim with provenance — character-exact recovery by

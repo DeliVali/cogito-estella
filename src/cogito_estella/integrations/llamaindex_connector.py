@@ -102,6 +102,47 @@ def extract_literals(text: str, extra_patterns: dict = None,
     return out
 
 
+def score_report(exist_logits, adj_logits, cand: list, rels: list,
+                 threshold: float, adj_threshold: float, force_top1: bool) -> dict:
+    """Explain mode: per-candidate existence probabilities and per-edge confidences.
+    Same decision rule as decode_triples_coo, with every probability exposed and the
+    force-top1 floor edge flagged (its low confidence stays visible)."""
+    import torch as _t
+    ep = _t.sigmoid(exist_logits).tolist()
+    ap = _t.sigmoid(adj_logits)
+    report = {"candidates": [{"name": c, "exist_prob": round(float(p), 4)}
+                             for c, p in zip(cand, ep)],
+              "edges": [], "triples": []}
+    present = [p > threshold for p in ep]
+    n = len(cand)
+    for r in range(len(rels)):
+        for i in range(n):
+            for j in range(n):
+                if i != j and present[i] and present[j]                         and float(ap[r, i, j]) > adj_threshold:
+                    report["edges"].append(
+                        {"s": cand[i], "r": rels[r], "o": cand[j],
+                         "adj_prob": round(float(ap[r, i, j]), 4),
+                         "exist_s": round(ep[i], 4), "exist_o": round(ep[j], 4),
+                         "forced": False})
+    if force_top1 and not report["edges"] and n >= 2:
+        best, arg = -1.0, None
+        for r in range(len(rels)):
+            for i in range(n):
+                for j in range(n):
+                    if i == j:
+                        continue
+                    sc = float(ap[r, i, j]) * ep[i] * ep[j]
+                    if sc > best:
+                        best, arg = sc, (r, i, j)
+        r, i, j = arg
+        report["edges"].append({"s": cand[i], "r": rels[r], "o": cand[j],
+                                "adj_prob": round(float(ap[r, i, j]), 4),
+                                "exist_s": round(ep[i], 4), "exist_o": round(ep[j], 4),
+                                "forced": True})
+    report["triples"] = [(e["s"], e["r"], e["o"]) for e in report["edges"]]
+    return report
+
+
 class CogitoGraphExtractor:
     """text -> knowledge-graph triples in one non-autoregressive pass."""
 
@@ -197,6 +238,22 @@ class CogitoGraphExtractor:
         return self.extract(text, candidates=candidates, lang=lang), extract_literals(text)
 
     @staticmethod
+    def ensure_schema(driver, database: str = None):
+        """Create idempotent uniqueness constraints. REQUIRED for concurrent ingestion:
+        without them, simultaneous MERGEs can race and duplicate nodes (measured).
+        Migrating a pre-existing database: deduplicate first — constraint creation
+        fails if duplicates already exist."""
+        stmts = [
+            "CREATE CONSTRAINT cogito_entity_name IF NOT EXISTS "
+            "FOR (e:Entity) REQUIRE e.name IS UNIQUE",
+            "CREATE CONSTRAINT cogito_literal_vk IF NOT EXISTS "
+            "FOR (l:Literal) REQUIRE (l.value, l.kind) IS UNIQUE",
+        ]
+        with driver.session(database=database) as session:
+            for q in stmts:
+                session.run(q)
+
+    @staticmethod
     def literals_to_neo4j(driver, triples: list, literals: dict,
                           source: str = "unknown", database: str = None):
         """Attach verbatim literals to the sentence's entities (co-occurrence linking;
@@ -212,13 +269,29 @@ class CogitoGraphExtractor:
                                     kind=kind, src=source)
 
     def extract(self, text: str, candidates: list = None, lang: str = "eng_Latn",
-                embedding: torch.Tensor = None) -> list:
-        """Returns [(subject, relation, object), ...] as plain strings."""
+                embedding: torch.Tensor = None, return_scores: bool = False):
+        """Returns [(subject, relation, object), ...]; with return_scores=True, a full
+        explain report: per-candidate existence probabilities and per-edge confidences
+        (forced floor edges flagged with their low confidence visible)."""
         cand = self._candidates(text, candidates)
         if len(cand) < 2:
-            return []
+            return {"candidates": [], "edges": [], "triples": []} if return_scores else []
         emb = embedding if embedding is not None else self._encode([text], lang)[0]
-        return self._decode(emb, cand)
+        if not return_scores:
+            return self._decode(emb, cand)
+        ids = torch.tensor([[self.ent2id[c] for c in cand]], device=self.device)
+        mask = torch.ones(1, len(cand), dtype=torch.bool, device=self.device)
+        eps, aps = [], []
+        with torch.no_grad():
+            for dec in self.decs:
+                out = dec(emb[None].float().to(self.device), ids, mask)
+                eps.append(torch.sigmoid(out["exist_logits"]))
+                aps.append(torch.sigmoid(out["adj_logits"]))
+        ep = torch.stack(eps).mean(0).clamp(1e-6, 1 - 1e-6)[0]
+        ap = torch.stack(aps).mean(0).clamp(1e-6, 1 - 1e-6)[0]
+        return score_report(torch.logit(ep).cpu(), torch.logit(ap).cpu(), cand,
+                            self.rels, self.threshold, self.adj_threshold,
+                            self.force_top1)
 
     def extract_batch(self, texts: list, candidates: list = None,
                       lang: str = "eng_Latn") -> list:

@@ -26,6 +26,12 @@ _CYPHER = (
     "MERGE (b:Entity {name: $o}) "
     "MERGE (a)-[r:REL {type: $r, source: $src}]->(b)"
 )
+_CYPHER_PROV = (
+    "MERGE (a:Entity {name: $s}) "
+    "MERGE (b:Entity {name: $o}) "
+    "MERGE (a)-[r:REL {type: $r, source: $src}]->(b) "
+    "SET r.sentence = $sentence, r.s_span = $s_span, r.o_span = $o_span"
+)
 _CYPHER_LITERAL = (
     "MERGE (e:Entity {name: $ent}) "
     "MERGE (l:Literal {value: $value, kind: $kind}) "
@@ -141,6 +147,56 @@ def score_report(exist_logits, adj_logits, cand: list, rels: list,
                                 "forced": True})
     report["triples"] = [(e["s"], e["r"], e["o"]) for e in report["edges"]]
     return report
+
+
+def candidate_spans(text: str, ent2id: dict, nlp=None) -> list:
+    """[(lemma, start, end)] for in-vocab noun mentions — the exact surface span that
+    produced each candidate. spaCy path uses token offsets; fallback scans substrings."""
+    spans = []
+    if nlp is None:
+        try:
+            import spacy
+            nlp = spacy.load("en_core_web_sm", disable=["ner"])
+        except Exception:
+            nlp = False
+    if nlp:
+        seen = set()
+        for tok in nlp(text):
+            if tok.pos_ in ("NOUN", "PROPN"):
+                lem = tok.lemma_.lower()
+                if lem in ent2id and lem not in seen:
+                    seen.add(lem)
+                    spans.append((lem, tok.idx, tok.idx + len(tok.text)))
+        return spans
+    pos, seen = 0, set()
+    for raw in text.split():
+        t = raw.strip(".,;:!?()[]\"'").lower()
+        start = text.find(raw, pos)
+        pos = start + len(raw)
+        for form in (t, t[:-1] if t.endswith("s") else None,
+                     t[:-2] if t.endswith("es") else None):
+            if form and form in ent2id and form not in seen:
+                seen.add(form)
+                off = raw.lower().find(form[:1])
+                spans.append((form, start, start + len(raw.strip(".,;:!?()[]\"'"))))
+                break
+    return spans
+
+
+def provenance_records(triples: list, span_map: dict, sentence: str,
+                       doc_offset: int = 0) -> list:
+    """Edge records with span-level provenance. Entities without a surface mention
+    (memory-supplied candidates) carry a null span — honesty over invention."""
+    recs = []
+    for s, r, o in triples:
+        def span(e):
+            if e not in span_map:
+                return None
+            a, b = span_map[e]
+            return [a + doc_offset, b + doc_offset]
+        recs.append({"s": s, "r": r, "o": o, "sentence": sentence,
+                     "s_span": span(s), "o_span": span(o)})
+    return recs
 
 
 class CogitoGraphExtractor:
@@ -293,6 +349,17 @@ class CogitoGraphExtractor:
                             self.rels, self.threshold, self.adj_threshold,
                             self.force_top1)
 
+    def extract_with_provenance(self, text: str, candidates: list = None,
+                                lang: str = "eng_Latn", doc_offset: int = 0) -> list:
+        """Edge records with sentence + character-span provenance, ready for
+        to_neo4j. Absolute spans = local span + doc_offset (caller knows where this
+        sentence sits in the document)."""
+        triples = self.extract(text, candidates=candidates, lang=lang)
+        spans = candidate_spans(text, self.ent2id,
+                                nlp=self._scanner() or None)
+        span_map = {lem: (a, b) for lem, a, b in spans}
+        return provenance_records(triples, span_map, text, doc_offset)
+
     def extract_batch(self, texts: list, candidates: list = None,
                       lang: str = "eng_Latn") -> list:
         """Batched ingestion: ONE encoder call for N texts. Returns a list of triple
@@ -313,8 +380,14 @@ class CogitoGraphExtractor:
         """MERGE triples into Neo4j with per-edge provenance. `driver` is a
         neo4j.Driver (pip install cogito-estella[graph])."""
         with driver.session(database=database) as session:
-            for s, r, o in triples:
-                session.run(_CYPHER, s=s, r=r, o=o, src=source)
+            for t in triples:
+                if isinstance(t, dict):
+                    session.run(_CYPHER_PROV, s=t["s"], r=t["r"], o=t["o"], src=source,
+                                sentence=t.get("sentence"), s_span=t.get("s_span"),
+                                o_span=t.get("o_span"))
+                else:
+                    s, r, o = t
+                    session.run(_CYPHER, s=s, r=r, o=o, src=source)
 
     def to_cypher(self, triples: list, source: str = "unknown") -> list:
         """Driver-free variant: returns (query, params) pairs for any executor."""

@@ -11,7 +11,7 @@ class FakeSession:
         self.calls = []
 
     def run(self, q, **p):
-        self.calls.append(q)
+        self.calls.append((q, p))
 
     def __enter__(self):
         return self
@@ -31,7 +31,7 @@ class FakeDriver:
 def test_ensure_schema_creates_idempotent_uniqueness_constraints():
     drv = FakeDriver()
     CogitoGraphExtractor.ensure_schema(drv)
-    joined = " ".join(drv.s.calls)
+    joined = " ".join(q for q, _ in drv.s.calls)
     assert "IF NOT EXISTS" in joined, "must be idempotent"
     assert "Entity" in joined and "name" in joined and "UNIQUE" in joined
     assert "Literal" in joined, "Literal nodes need uniqueness too"
@@ -64,3 +64,32 @@ def test_score_report_marks_forced_floor_edge():
                        force_top1=True)
     assert len(rep["edges"]) == 1 and rep["edges"][0]["forced"] is True
     assert rep["edges"][0]["adj_prob"] < 0.5, "forced edge must expose its low confidence"
+
+
+def test_parallel_provenance_edges_preserve_contradiction_shape():
+    """Contradictory claims from different versions must land as SEPARATE edges
+    (same pair, different type+source) — never overwritten or deduped away."""
+    drv = FakeDriver()
+    from cogito_estella.integrations.llamaindex_connector import CogitoGraphExtractor
+    ex = object.__new__(CogitoGraphExtractor)   # Cypher path only; no model needed
+    CogitoGraphExtractor.to_neo4j(ex, drv, [("committee", "support", "budget")],
+                                  source="informe@v1")
+    CogitoGraphExtractor.to_neo4j(ex, drv, [("committee", "face", "budget")],
+                                  source="informe@v2")
+    assert len(drv.s.calls) == 2, "both versions must write their own edge"
+
+
+def test_forced_contradiction_edge_exposes_uncertainty():
+    """A verb outside the relation vocab decodes as a forced floor edge whose low
+    confidence stays visible — the signal a review/oracle stage needs (measured live:
+    'rejected' -> face @ 0.02 forced vs 'approved' -> support @ 0.74)."""
+    cand = ["committee", "budget"]
+    rels = ["support", "face"]
+    exist = torch.tensor([2.0, 2.0])
+    adj = torch.full((2, 2, 2), -6.0)
+    adj[1, 0, 1] = -4.0                     # best available, still hopeless
+    rep = score_report(exist, adj, cand, rels, threshold=0.15, adj_threshold=0.15,
+                       force_top1=True)
+    e = rep["edges"][0]
+    assert e["forced"] is True and e["adj_prob"] < 0.05, \
+        "review stages must be able to discriminate floor edges from confident ones"

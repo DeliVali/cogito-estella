@@ -2,6 +2,12 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.12.0] - 2026-09-02
+
+### Added
+- **`ensure_schema(driver)`**: idempotent uniqueness constraints (Entity.name; Literal value+kind). Concurrent `MERGE` ingestion measurably races and duplicates nodes without them; deterministic with them. Migration note: deduplicate pre-existing databases before constraining.
+- **Explain mode**: `extract(..., return_scores=True)` returns per-candidate existence probabilities and per-edge confidences; force-top1 floor edges are flagged with their low confidence visible.
+
 ## [0.11.0] - 2026-09-02
 
 ### Added

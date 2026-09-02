@@ -2,6 +2,11 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.11.0] - 2026-09-02
+
+### Added
+- **Dynamic literal detection**: `uuid` pattern plus an entropy-based `token` detector — any opaque high-entropy string (nanoid, JWT, base64 ciphertext, API keys) is caught by its Shannon-entropy signature without per-format patterns. High-entropy tokens are stored as sha256 fingerprints by default (queryable, irrecoverable — they are often secrets); `redact_sensitive=False` opts into verbatim. `extra_patterns` lets callers register domain formats (invoices, SKUs) with top precedence.
+
 ## [0.10.0] - 2026-09-01
 
 ### Added

@@ -12,6 +12,7 @@ standard Cypher MERGE statements with per-edge provenance; the neo4j driver ship
 the `[graph]` extra. SONAR (the `[sonar]` extra) is loaded lazily on first call.
 """
 import json
+import math
 import re
 from pathlib import Path
 
@@ -37,6 +38,9 @@ _CYPHER_LITERAL = (
 _LITERAL_PATTERNS = {
     "url": re.compile(r"https?://[^\s]+"),
     "email": re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
+    "uuid": re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                       r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
+    "token": re.compile(r"[A-Za-z0-9_\-+/=.]{16,}"),
     "hash": re.compile(r"\b[0-9a-f]{12,64}\b"),
     "phone": re.compile(r"\+?\d[\d\s().-]{6,16}\d"),
     "number": re.compile(r"\b\d+\.\d+\b|\b\d{5,}\b"),
@@ -45,17 +49,35 @@ _LITERAL_PATTERNS = {
 }
 
 
-def extract_literals(text: str) -> dict:
+def _entropy(s: str) -> float:
+    from collections import Counter
+    counts = Counter(s)
+    n = len(s)
+    return -sum((c / n) * math.log2(c / n) for c in counts.values())
+
+
+def extract_literals(text: str, extra_patterns: dict = None,
+                     redact_sensitive: bool = True) -> dict:
     """Deterministic verbatim literal detection. Returns {kind: [exact substrings]}.
-    Precedence removes overlaps (a phone inside a URL is just the URL)."""
-    out = {k: [] for k in ("url", "email", "hash", "phone", "number", "id")}
+    Precedence removes overlaps (a phone inside a URL is just the URL).
+
+    `token` is the DYNAMIC detector: any opaque high-entropy string (nanoid, JWT,
+    base64 ciphertext, API keys) is caught by its Shannon-entropy signature — no
+    per-format pattern needed. Because such tokens are often secrets, they are
+    stored as sha256 fingerprints by default (queryable, irrecoverable); pass
+    redact_sensitive=False for verbatim. `extra_patterns` ({name: compiled_regex})
+    lets callers add domain formats with top precedence."""
+    kinds = list(extra_patterns or {}) + ["url", "email", "uuid", "token", "hash",
+                                          "phone", "number", "id"]
+    patterns = {**(extra_patterns or {}), **_LITERAL_PATTERNS}
+    out = {k: [] for k in kinds}
     taken = []
 
     def overlaps(a, b):
         return not (a[1] <= b[0] or b[1] <= a[0])
 
-    for kind in ("url", "email", "hash", "phone", "number", "id"):
-        for m in _LITERAL_PATTERNS[kind].finditer(text):
+    for kind in kinds:
+        for m in patterns[kind].finditer(text):
             span, val = m.span(), m.group(0)
             if any(overlaps(span, t) for t in taken):
                 continue
@@ -67,6 +89,14 @@ def extract_literals(text: str) -> dict:
                     continue
             if kind == "id" and sum(c.isdigit() for c in val) < 2:
                 continue
+            if kind == "token":
+                has_digit = any(c.isdigit() for c in val)
+                mixed_case = val.lower() != val and val.upper() != val
+                if not ((has_digit or mixed_case) and _entropy(val) >= 3.9):
+                    continue
+                if redact_sensitive:
+                    import hashlib
+                    val = "sha256:" + hashlib.sha256(val.encode()).hexdigest()[:16]
             taken.append(span)
             out[kind].append(val)
     return out

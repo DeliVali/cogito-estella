@@ -12,6 +12,7 @@ standard Cypher MERGE statements with per-edge provenance; the neo4j driver ship
 the `[graph]` extra. SONAR (the `[sonar]` extra) is loaded lazily on first call.
 """
 import json
+import re
 from pathlib import Path
 
 import torch
@@ -24,6 +25,51 @@ _CYPHER = (
     "MERGE (b:Entity {name: $o}) "
     "MERGE (a)-[r:REL {type: $r, source: $src}]->(b)"
 )
+_CYPHER_LITERAL = (
+    "MERGE (e:Entity {name: $ent}) "
+    "MERGE (l:Literal {value: $value, kind: $kind}) "
+    "MERGE (e)-[r:HAS_LITERAL {source: $src}]->(l)"
+)
+
+# Exact literals never enter the semantic space: they are detected deterministically in
+# the source text and stored VERBATIM. Semantic decoding carries meaning; this channel
+# carries the strings that must never be approximated.
+_LITERAL_PATTERNS = {
+    "url": re.compile(r"https?://[^\s]+"),
+    "email": re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
+    "hash": re.compile(r"\b[0-9a-f]{12,64}\b"),
+    "phone": re.compile(r"\+?\d[\d\s().-]{6,16}\d"),
+    "number": re.compile(r"\b\d+\.\d+\b|\b\d{5,}\b"),
+    "id": re.compile(r"\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])"
+                     r"[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+){1,4}\b"),
+}
+
+
+def extract_literals(text: str) -> dict:
+    """Deterministic verbatim literal detection. Returns {kind: [exact substrings]}.
+    Precedence removes overlaps (a phone inside a URL is just the URL)."""
+    out = {k: [] for k in ("url", "email", "hash", "phone", "number", "id")}
+    taken = []
+
+    def overlaps(a, b):
+        return not (a[1] <= b[0] or b[1] <= a[0])
+
+    for kind in ("url", "email", "hash", "phone", "number", "id"):
+        for m in _LITERAL_PATTERNS[kind].finditer(text):
+            span, val = m.span(), m.group(0)
+            if any(overlaps(span, t) for t in taken):
+                continue
+            if kind == "phone":
+                digits = sum(c.isdigit() for c in val)
+                # bare digit runs are numbers/ids; phones carry separators or '+'
+                has_sep = val.startswith("+") or any(c in val for c in " ()-.")
+                if not (8 <= digits <= 15 and has_sep):
+                    continue
+            if kind == "id" and sum(c.isdigit() for c in val) < 2:
+                continue
+            taken.append(span)
+            out[kind].append(val)
+    return out
 
 
 class CogitoGraphExtractor:
@@ -114,6 +160,26 @@ class CogitoGraphExtractor:
                                  adj_threshold=self.adj_threshold,
                                  force_top1=self.force_top1)[0]
         return [(cand[i], self.rels[r], cand[j]) for i, r, j in sorted(coo)]
+
+    def extract_with_literals(self, text: str, candidates: list = None,
+                              lang: str = "eng_Latn"):
+        """(triples, literals): semantic graph + verbatim exact strings, one call."""
+        return self.extract(text, candidates=candidates, lang=lang), extract_literals(text)
+
+    @staticmethod
+    def literals_to_neo4j(driver, triples: list, literals: dict,
+                          source: str = "unknown", database: str = None):
+        """Attach verbatim literals to the sentence's entities (co-occurrence linking;
+        provenance on every HAS_LITERAL edge disambiguates)."""
+        ents = sorted({e for s, r, o in triples for e in (s, o)})
+        if not ents:
+            return
+        with driver.session(database=database) as session:
+            for kind, values in literals.items():
+                for value in values:
+                    for ent in ents:
+                        session.run(_CYPHER_LITERAL, ent=ent, value=value,
+                                    kind=kind, src=source)
 
     def extract(self, text: str, candidates: list = None, lang: str = "eng_Latn",
                 embedding: torch.Tensor = None) -> list:

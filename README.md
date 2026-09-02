@@ -1,4 +1,4 @@
-# Cogito Estella: Latent Graph Engine (v0.9.0)
+# Cogito Estella: Latent Graph Engine (v0.10.0)
 
 Non-autoregressive inference backend that decodes SONAR (Meta) semantic embeddings
 directly into knowledge graphs, bypassing token-based text decoding entirely.
@@ -172,6 +172,11 @@ python quickstart.py
 
 `quickstart.py` encodes two raw sentences and prints their decoded triples in one
 non-autoregressive pass.
+
+**Exact literals** (phones, hashes, IDs, precise amounts) never round-trip through the
+embedding: `extract_with_literals` detects them deterministically in the source text and
+`literals_to_neo4j` stores them verbatim with provenance — character-exact recovery by
+query, guaranteed by copying rather than decoding.
 
 **Weight licensing:** all from-scratch decoder heads (GraphDecoder,
 CandidateGraphDecoder, trunks, ensembles) are Apache-2.0. The code-modality LoRA

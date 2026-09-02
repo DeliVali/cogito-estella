@@ -2,6 +2,11 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.10.0] - 2026-09-01
+
+### Added
+- **Exact-literal channel** in the connector: deterministic verbatim detection of phones, emails, URLs, hashes, IDs, and precise numbers in the source text (`extract_literals`, `extract_with_literals`, `literals_to_neo4j`). Literals never enter the semantic space — they are stored verbatim as `(:Literal)` nodes linked to the sentence's entities with per-edge provenance, and recover character-exact by query. Closes the "continuous latent spaces lose exact strings" concern at the modeling level: meaning travels through embeddings; exact strings travel through copy.
+
 ## [0.9.0] - 2026-09-01
 
 ### Added

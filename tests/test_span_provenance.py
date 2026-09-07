@@ -57,3 +57,17 @@ def test_to_neo4j_accepts_provenance_records():
     assert "sentence" in q and "s_span" in q
     assert p["sentence"].startswith("The committee") and p["s_span"] == [4, 13] \
         and p["src"] == "doc@v3"
+
+
+def test_extract_with_provenance_adds_lexical_label(monkeypatch, nlp):
+    """Passive sentence: the record is reoriented and labeled from syntax."""
+    from cogito_estella.integrations import llamaindex_connector as lc
+    ex = object.__new__(lc.CogitoGraphExtractor)
+    ex.ent2id = {"concept": 1, "sonar": 2}
+    ex._nlp = nlp
+    monkeypatch.setattr(ex, "extract", lambda text, candidates=None, lang="eng_Latn",
+                        return_scores=False: [("concept", "improve", "sonar")])
+    recs = ex.extract_with_provenance("The concepts are decoded by SONAR.")
+    r = recs[0]
+    assert (r["s"], r["r"], r["o"]) == ("sonar", "decode", "concept")
+    assert r["r_lex"] == "decode" and r["r_class"] == "improve" and r["swapped"] is True

@@ -351,14 +351,27 @@ class CogitoGraphExtractor:
 
     def extract_with_provenance(self, text: str, candidates: list = None,
                                 lang: str = "eng_Latn", doc_offset: int = 0) -> list:
-        """Edge records with sentence + character-span provenance, ready for
-        to_neo4j. Absolute spans = local span + doc_offset (caller knows where this
-        sentence sits in the document)."""
+        """Edge records with sentence + char spans; relation label lexicalized from the
+        dependency path when spaCy is available (`r_lex`), class label kept in `r_class`."""
+        from cogito_estella.relation_lexicalizer import lexicalize
         triples = self.extract(text, candidates=candidates, lang=lang)
-        spans = candidate_spans(text, self.ent2id,
-                                nlp=self._scanner() or None)
-        span_map = {lem: (a, b) for lem, a, b in spans}
-        return provenance_records(triples, span_map, text, doc_offset)
+        nlp = self._scanner() or None
+        doc = nlp(text) if nlp else None
+        span_map = {lem: (a, b) for lem, a, b in candidate_spans(text, self.ent2id, nlp=nlp)}
+        recs = provenance_records(triples, span_map, text, doc_offset)
+        for rec in recs:
+            rec.update(r_class=rec["r"], r_lex=None, pattern=None, swapped=False)
+            s, o = rec["s"], rec["o"]
+            if doc is None or s not in span_map or o not in span_map:
+                continue
+            lex = lexicalize(doc, span_map[s], span_map[o])
+            if lex is None:
+                continue
+            rec.update(r=lex.label, r_lex=lex.label, pattern=lex.pattern, swapped=lex.swapped)
+            if lex.swapped:
+                rec["s"], rec["o"] = o, s
+                rec["s_span"], rec["o_span"] = rec["o_span"], rec["s_span"]
+        return recs
 
     def extract_batch(self, texts: list, candidates: list = None,
                       lang: str = "eng_Latn") -> list:

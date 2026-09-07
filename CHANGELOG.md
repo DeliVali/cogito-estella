@@ -2,6 +2,11 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.13.0] - 2026-09-07
+
+### Added
+- **Relation lexicalizer** (`cogito_estella.relation_lexicalizer`): edge labels read from the dependency path between the two entity spans (passive agent inversion, verb+preposition, copula `is_a`, nominal prepositions, compounds, `not_` negation, verb particles). `extract_with_provenance` now returns `r_lex`/`r_class`/`pattern`/`swapped`; the 76-class label is kept in `r_class`. Measured on 4 ingested papers: lexical coverage 0.334 of head-proposed edges (503/1504); blind fidelity rate class 0.11 / lexicalized (A) 0.96 / phrase-span control (B) 0.61 (n=100); token cost +1.45% per fact.
+
 ## [0.12.0] - 2026-09-02
 
 ### Added

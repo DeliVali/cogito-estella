@@ -1,4 +1,6 @@
 """Pattern table of the relation lexicalizer (spec 2026-09-06, section Components)."""
+import pytest
+
 from cogito_estella.relation_lexicalizer import Lex, between_spans, head_token, lexicalize
 
 
@@ -55,7 +57,7 @@ def test_row4_reduced_relative_acl(nlp):
     assert lex == Lex(label="train_on", pattern=4, swapped=False)
 
 
-def test_row1_beats_row4_when_both_agent_and_prep_exist(nlp):
+def test_row4_labels_the_prep_object_of_a_passive_with_an_agent(nlp):
     s = "Finally, the generated concepts are decoded by SONAR into a sequence of subwords."
     lex = lexicalize(nlp(s), span_of(s, "concepts"), span_of(s, "sequence"))
     assert lex == Lex(label="decode_into", pattern=4, swapped=False)
@@ -91,6 +93,26 @@ def test_negation_prefix(nlp):
     assert lex == Lex(label="not_approve", pattern=2, swapped=False)
 
 
+def test_row5_copula_negation_is_not_a(nlp):
+    s = "SONAR is not a decoder."
+    lex = lexicalize(nlp(s), span_of(s, "SONAR"), span_of(s, "decoder"))
+    assert lex == Lex(label="not_is_a", pattern=5, swapped=False)
+
+
+def test_punctuation_only_preposition_yields_no_label(nlp):
+    # governing preposition token is punctuation ("@") -> row 6 would clean to "";
+    # the empty label must not reach the caller.
+    s = "We report accuracy @ the token level."
+    lex = lexicalize(nlp(s), span_of(s, "accuracy"), span_of(s, "level"))
+    assert lex is None
+
+
+def test_between_spans_returns_none_for_punctuation_only_span():
+    s = "Code-switching."
+    lex = between_spans(s, span_of(s, "Code"), span_of(s, "switching"))
+    assert lex is None
+
+
 def test_particle_is_attached(nlp):
     s = "The scheduler sets up the noise levels."
     lex = lexicalize(nlp(s), span_of(s, "scheduler"), span_of(s, "levels"))
@@ -114,6 +136,14 @@ def test_fallback_on_out_of_range_span(nlp):
     assert lexicalize(nlp(s), (0, 3), (500, 504)) is None
 
 
+def test_fallback_on_doc_without_sentence_boundaries():
+    spacy = pytest.importorskip("spacy")
+    blank = spacy.blank("en")
+    s = "The encoder maps text."
+    doc = blank(s)
+    assert lexicalize(doc, span_of(s, "encoder"), span_of(s, "text")) is None
+
+
 def test_control_between_spans_keeps_content_words_and_preps():
     s = "In practice, a concept would often correspond to a sentence in a text document."
     lex = between_spans(s, span_of(s, "concept"), span_of(s, "sentence"))
@@ -129,7 +159,7 @@ def test_control_between_spans_by_swaps_direction():
 def test_control_between_spans_truncates_to_three_and_handles_adjacent():
     s = "The model quickly and reliably learns to predict the next embedding vector."
     lex = between_spans(s, span_of(s, "model"), span_of(s, "vector"))
-    assert lex is not None and lex.label.count("_") <= 2
+    assert lex == Lex(label="learns_to_predict", pattern=0, swapped=False)
     assert between_spans(s, span_of(s, "embedding"), span_of(s, "vector")) is None
 
 
@@ -181,19 +211,14 @@ for subj, label, obj, active, passive in FACTS:
     PASSIVES.append((passive, (subj, label, obj)))
 
 
-def _span(sentence, word):
-    i = sentence.index(word)
-    return (i, i + len(word))
-
-
-def probe(nlp, lexicalize):
+def probe(nlp):
     """(n_correct, misses). A probe is correct when label and printed direction match."""
     correct, misses = 0, []
     for sentence, (subj, label, obj) in PASSIVES:
         doc = nlp(sentence)
         # feed spans in text order, like the store does when the head proposes them
         first, second = sorted((subj, obj), key=sentence.index)
-        lex = lexicalize(doc, _span(sentence, first), _span(sentence, second))
+        lex = lexicalize(doc, span_of(sentence, first), span_of(sentence, second))
         printed = None
         if lex is not None:
             printed = (second, lex.label, first) if lex.swapped else (first, lex.label, second)
@@ -210,5 +235,5 @@ def test_probe_set_has_forty_entries_in_active_passive_pairs():
 
 
 def test_passive_direction_is_exact(nlp):
-    correct, misses = probe(nlp, lexicalize)
+    correct, misses = probe(nlp)
     assert correct == 40, misses

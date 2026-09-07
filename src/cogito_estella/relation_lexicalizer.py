@@ -87,10 +87,11 @@ def _match(p, q) -> tuple[str, int] | None:
     v = _passive_verb(p)
     if v is not None and pq is not None and pq[0] == v:
         return verb_label(v, pq[1]), 4
-    # row 5: copula with attr predicate (is_a)
+    # row 5: copula with attr predicate (is_a / not_is_a)
     if p.dep_ in SUBJ and q.dep_ == "attr" and q.head == p.head \
             and p.head.lemma_.lower() == "be":
-        return "is_a", 5
+        neg = any(c.dep_ == "neg" for c in p.head.children)
+        return ("not_is_a" if neg else "is_a"), 5
     # row 6: nominal possessive (prep object of a noun)
     if p.pos_ in ("NOUN", "PROPN") and pq is not None and pq[0] == p:
         return _clean(pq[1]), 6
@@ -102,11 +103,14 @@ def _match(p, q) -> tuple[str, int] | None:
 
 def lexicalize(doc, s_span, o_span) -> Lex | None:
     a, b = head_token(doc, s_span), head_token(doc, o_span)
+    if not doc.has_annotation("SENT_START"):
+        return None
     if a is None or b is None or a == b or a.sent.start != b.sent.start:
         return None
+    # priority is per orientation: all rows are tried for (a, b) before any row for (b, a)
     for p, q, swapped in ((a, b, False), (b, a, True)):
         hit = _match(p, q)
-        if hit:
+        if hit and hit[0]:
             return Lex(hit[0], hit[1], swapped)
     return None
 
@@ -120,7 +124,9 @@ _WORD = re.compile(r"[A-Za-z0-9\-']+")
 
 
 def between_spans(sentence: str, s_span, o_span) -> Lex | None:
-    """Control B: up to three content tokens strictly between the spans; `by` swaps."""
+    """Control B: the syntax-free evaluation control used by the bench measures, not a
+    supported labeler. Up to three content tokens strictly between the spans, surface
+    forms, no syntax; `by` swaps direction."""
     (_a0, a1), (b0, _b1) = sorted((tuple(s_span), tuple(o_span)))
     words = [w.lower() for w in _WORD.findall(sentence[a1:b0])]
     swapped = "by" in words
@@ -129,4 +135,5 @@ def between_spans(sentence: str, s_span, o_span) -> Lex | None:
         return None
     if tuple(s_span) > tuple(o_span):        # spans given in reverse text order
         swapped = not swapped
-    return Lex(_clean("_".join(keep)), 0, swapped)
+    label = _clean("_".join(keep))
+    return Lex(label, 0, swapped) if label else None

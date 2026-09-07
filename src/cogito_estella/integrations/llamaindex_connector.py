@@ -19,7 +19,10 @@ from pathlib import Path
 import torch
 
 from cogito_estella.model.candidate_decoder import (
-    CandidateDecoderConfig, CandidateGraphDecoder, decode_triples_coo)
+    CandidateDecoderConfig,
+    CandidateGraphDecoder,
+    decode_triples_coo,
+)
 
 _CYPHER = (
     "MERGE (a:Entity {name: $s}) "
@@ -30,7 +33,8 @@ _CYPHER_PROV = (
     "MERGE (a:Entity {name: $s}) "
     "MERGE (b:Entity {name: $o}) "
     "MERGE (a)-[r:REL {type: $r, source: $src}]->(b) "
-    "SET r.sentence = $sentence, r.s_span = $s_span, r.o_span = $o_span"
+    "SET r.sentence = $sentence, r.s_span = $s_span, r.o_span = $o_span, "
+    "r.r_class = $r_class, r.pattern = $pattern, r.swapped = $swapped"
 )
 _CYPHER_LITERAL = (
     "MERGE (e:Entity {name: $ent}) "
@@ -62,7 +66,7 @@ def _entropy(s: str) -> float:
     return -sum((c / n) * math.log2(c / n) for c in counts.values())
 
 
-def extract_literals(text: str, extra_patterns: dict = None,
+def extract_literals(text: str, extra_patterns: dict | None = None,
                      redact_sensitive: bool = True) -> dict:
     """Deterministic verbatim literal detection. Returns {kind: [exact substrings]}.
     Precedence removes overlaps (a phone inside a URL is just the URL).
@@ -157,7 +161,7 @@ def candidate_spans(text: str, ent2id: dict, nlp=None) -> list:
         try:
             import spacy
             nlp = spacy.load("en_core_web_sm", disable=["ner"])
-        except Exception:
+        except (ImportError, OSError):
             nlp = False
     if nlp:
         seen = set()
@@ -177,9 +181,20 @@ def candidate_spans(text: str, ent2id: dict, nlp=None) -> list:
                      t[:-2] if t.endswith("es") else None):
             if form and form in ent2id and form not in seen:
                 seen.add(form)
-                off = raw.lower().find(form[:1])
                 spans.append((form, start, start + len(raw.strip(".,;:!?()[]\"'"))))
                 break
+    return spans
+
+
+def spans_from_doc(doc, ent2id: dict) -> dict:
+    """First in-vocab NOUN/PROPN mention per lemma -> char span, reusing an already
+    parsed Doc (avoids a second spaCy pass over the same text)."""
+    spans = {}
+    for tok in doc:
+        if tok.pos_ in ("NOUN", "PROPN"):
+            lem = tok.lemma_.lower()
+            if lem in ent2id and lem not in spans:
+                spans[lem] = (tok.idx, tok.idx + len(tok.text))
     return spans
 
 
@@ -202,8 +217,8 @@ def provenance_records(triples: list, span_map: dict, sentence: str,
 class CogitoGraphExtractor:
     """text -> knowledge-graph triples in one non-autoregressive pass."""
 
-    def __init__(self, checkpoint, vocab_path: str, device: str = None,
-                 threshold: float = None, adj_threshold: float = None,
+    def __init__(self, checkpoint, vocab_path: str, device: str | None = None,
+                 threshold: float | None = None, adj_threshold: float | None = None,
                  force_top1: bool = True):
         """`checkpoint`: a single path, or a list of paths for prob-averaged ensemble
         decoding (the validated 0.827 recipe ships as 5 checkpoints). Defaults follow
@@ -244,7 +259,7 @@ class CogitoGraphExtractor:
             try:
                 import spacy
                 self._nlp = spacy.load("en_core_web_sm", disable=["ner"])
-            except Exception:
+            except (ImportError, OSError):
                 self._nlp = False
         return self._nlp
 
@@ -288,22 +303,22 @@ class CogitoGraphExtractor:
                                  force_top1=self.force_top1)[0]
         return [(cand[i], self.rels[r], cand[j]) for i, r, j in sorted(coo)]
 
-    def extract_with_literals(self, text: str, candidates: list = None,
+    def extract_with_literals(self, text: str, candidates: list | None = None,
                               lang: str = "eng_Latn"):
         """(triples, literals): semantic graph + verbatim exact strings, one call."""
         return self.extract(text, candidates=candidates, lang=lang), extract_literals(text)
 
     @staticmethod
-    def ensure_schema(driver, database: str = None):
+    def ensure_schema(driver, database: str | None = None):
         """Create idempotent uniqueness constraints. REQUIRED for concurrent ingestion:
         without them, simultaneous MERGEs can race and duplicate nodes (measured).
         Migrating a pre-existing database: deduplicate first — constraint creation
         fails if duplicates already exist."""
         stmts = [
-            "CREATE CONSTRAINT cogito_entity_name IF NOT EXISTS "
-            "FOR (e:Entity) REQUIRE e.name IS UNIQUE",
-            "CREATE CONSTRAINT cogito_literal_vk IF NOT EXISTS "
-            "FOR (l:Literal) REQUIRE (l.value, l.kind) IS UNIQUE",
+            ("CREATE CONSTRAINT cogito_entity_name IF NOT EXISTS "
+            "FOR (e:Entity) REQUIRE e.name IS UNIQUE"),
+            ("CREATE CONSTRAINT cogito_literal_vk IF NOT EXISTS "
+            "FOR (l:Literal) REQUIRE (l.value, l.kind) IS UNIQUE"),
         ]
         with driver.session(database=database) as session:
             for q in stmts:
@@ -311,7 +326,7 @@ class CogitoGraphExtractor:
 
     @staticmethod
     def literals_to_neo4j(driver, triples: list, literals: dict,
-                          source: str = "unknown", database: str = None):
+                          source: str = "unknown", database: str | None = None):
         """Attach verbatim literals to the sentence's entities (co-occurrence linking;
         provenance on every HAS_LITERAL edge disambiguates)."""
         ents = sorted({e for s, r, o in triples for e in (s, o)})
@@ -324,7 +339,7 @@ class CogitoGraphExtractor:
                         session.run(_CYPHER_LITERAL, ent=ent, value=value,
                                     kind=kind, src=source)
 
-    def extract(self, text: str, candidates: list = None, lang: str = "eng_Latn",
+    def extract(self, text: str, candidates: list | None = None, lang: str = "eng_Latn",
                 embedding: torch.Tensor = None, return_scores: bool = False):
         """Returns [(subject, relation, object), ...]; with return_scores=True, a full
         explain report: per-candidate existence probabilities and per-edge confidences
@@ -349,7 +364,7 @@ class CogitoGraphExtractor:
                             self.rels, self.threshold, self.adj_threshold,
                             self.force_top1)
 
-    def extract_with_provenance(self, text: str, candidates: list = None,
+    def extract_with_provenance(self, text: str, candidates: list | None = None,
                                 lang: str = "eng_Latn", doc_offset: int = 0) -> list:
         """Edge records with sentence + char spans; relation label lexicalized from the
         dependency path when spaCy is available (`r_lex`), class label kept in `r_class`."""
@@ -357,7 +372,11 @@ class CogitoGraphExtractor:
         triples = self.extract(text, candidates=candidates, lang=lang)
         nlp = self._scanner() or None
         doc = nlp(text) if nlp else None
-        span_map = {lem: (a, b) for lem, a, b in candidate_spans(text, self.ent2id, nlp=nlp)}
+        if doc is not None:
+            span_map = spans_from_doc(doc, self.ent2id)
+        else:
+            span_map = {lem: (a, b)
+                       for lem, a, b in candidate_spans(text, self.ent2id, nlp=None)}
         recs = provenance_records(triples, span_map, text, doc_offset)
         for rec in recs:
             rec.update(r_class=rec["r"], r_lex=None, pattern=None, swapped=False)
@@ -373,7 +392,7 @@ class CogitoGraphExtractor:
                 rec["s_span"], rec["o_span"] = rec["o_span"], rec["s_span"]
         return recs
 
-    def extract_batch(self, texts: list, candidates: list = None,
+    def extract_batch(self, texts: list, candidates: list | None = None,
                       lang: str = "eng_Latn") -> list:
         """Batched ingestion: ONE encoder call for N texts. Returns a list of triple
         lists aligned with `texts`. `candidates` is an optional per-text list."""
@@ -389,7 +408,7 @@ class CogitoGraphExtractor:
         return results
 
     def to_neo4j(self, driver, triples: list, source: str = "unknown",
-                 database: str = None):
+                 database: str | None = None):
         """MERGE triples into Neo4j with per-edge provenance. `driver` is a
         neo4j.Driver (pip install cogito-estella[graph])."""
         with driver.session(database=database) as session:
@@ -397,12 +416,16 @@ class CogitoGraphExtractor:
                 if isinstance(t, dict):
                     session.run(_CYPHER_PROV, s=t["s"], r=t["r"], o=t["o"], src=source,
                                 sentence=t.get("sentence"), s_span=t.get("s_span"),
-                                o_span=t.get("o_span"))
+                                o_span=t.get("o_span"), r_class=t.get("r_class"),
+                                pattern=t.get("pattern"), swapped=t.get("swapped"))
                 else:
                     s, r, o = t
                     session.run(_CYPHER, s=s, r=r, o=o, src=source)
 
     def to_cypher(self, triples: list, source: str = "unknown") -> list:
         """Driver-free variant: returns (query, params) pairs for any executor."""
-        return [(_CYPHER, {"s": s, "r": r, "o": o, "src": source})
-                for s, r, o in triples]
+        out = []
+        for t in triples:
+            s, r, o = (t["s"], t["r"], t["o"]) if isinstance(t, dict) else t
+            out.append((_CYPHER, {"s": s, "r": r, "o": o, "src": source}))
+        return out

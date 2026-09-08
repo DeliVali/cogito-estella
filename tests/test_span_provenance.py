@@ -138,3 +138,25 @@ def test_extract_with_provenance_null_span_when_subject_has_no_mention(monkeypat
     r = recs[0]
     assert r["r"] == r["r_class"] == "have"
     assert r["s_span"] is None and r["o_span"] is not None
+
+
+def test_extract_batch_with_provenance_matches_single_path(monkeypatch, nlp):
+    """Batch path yields the same records as the single-sentence path, offsets applied."""
+    from cogito_estella.integrations import llamaindex_connector as lc
+    ex = object.__new__(lc.CogitoGraphExtractor)
+    ex.ent2id = {"concept": 1, "sonar": 2, "encoder": 3, "text": 4}
+    ex._nlp = nlp
+    texts = ["The concepts are decoded by SONAR.", "The encoder maps text."]
+    gold = {texts[0]: [("concept", "improve", "sonar")], texts[1]: [("encoder", "give", "text")]}
+    monkeypatch.setattr(ex, "extract", lambda text, candidates=None, lang="eng_Latn",
+                        return_scores=False: gold[text])
+    monkeypatch.setattr(ex, "extract_batch", lambda ts, candidates=None, lang="eng_Latn":
+                        [gold[t] for t in ts])
+    batch = ex.extract_batch_with_provenance(texts, doc_offsets=[0, 100])
+    single = [ex.extract_with_provenance(texts[0], doc_offset=0),
+              ex.extract_with_provenance(texts[1], doc_offset=100)]
+    assert batch == single
+    assert (batch[0][0]["s"], batch[0][0]["r"], batch[0][0]["o"]) == ("sonar", "decode", "concept")
+    # "encoder" at 4..11, offset 100; the parser reorients this sentence (swapped=True),
+    # so "encoder" lands in o_span rather than s_span — asserted via `single` equality above.
+    assert batch[1][0]["o_span"] == [104, 111]

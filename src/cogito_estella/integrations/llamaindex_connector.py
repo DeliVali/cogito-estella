@@ -368,16 +368,40 @@ class CogitoGraphExtractor:
                                 lang: str = "eng_Latn", doc_offset: int = 0) -> list:
         """Edge records with sentence + char spans; relation label lexicalized from the
         dependency path when spaCy is available (`r_lex`), class label kept in `r_class`."""
-        from cogito_estella.relation_lexicalizer import lexicalize
         triples = self.extract(text, candidates=candidates, lang=lang)
         nlp = self._scanner() or None
         doc = nlp(text) if nlp else None
-        if doc is not None:
-            span_map = spans_from_doc(doc, self.ent2id)
-        else:
-            span_map = {lem: (a, b)
-                       for lem, a, b in candidate_spans(text, self.ent2id, nlp=None)}
+        span_map = self._span_map(text, doc)
         recs = provenance_records(triples, span_map, text, doc_offset)
+        self._lexicalize_records(doc, span_map, recs)
+        return recs
+
+    def extract_batch_with_provenance(self, texts: list, doc_offsets: list | None = None,
+                                      candidates: list | None = None,
+                                      lang: str = "eng_Latn") -> list:
+        """Batched `extract_with_provenance`: one encoder call for N texts, then per-text
+        span map + lexicalization. Returns record lists aligned with `texts`."""
+        triples_per = self.extract_batch(texts, candidates=candidates, lang=lang)
+        nlp = self._scanner() or None
+        offsets = doc_offsets or [0] * len(texts)
+        out = []
+        for text, triples, off in zip(texts, triples_per, offsets):
+            doc = nlp(text) if nlp else None
+            span_map = self._span_map(text, doc)
+            recs = provenance_records(triples, span_map, text, off)
+            self._lexicalize_records(doc, span_map, recs)
+            out.append(recs)
+        return out
+
+    def _span_map(self, text: str, doc) -> dict:
+        if doc is not None:
+            return spans_from_doc(doc, self.ent2id)
+        return {lem: (a, b) for lem, a, b in candidate_spans(text, self.ent2id, nlp=None)}
+
+    @staticmethod
+    def _lexicalize_records(doc, span_map: dict, recs: list) -> None:
+        """Attach r_class/r_lex/pattern/swapped; reorient s/o and spans when syntax says so."""
+        from cogito_estella.relation_lexicalizer import lexicalize
         for rec in recs:
             rec.update(r_class=rec["r"], r_lex=None, pattern=None, swapped=False)
             s, o = rec["s"], rec["o"]
@@ -390,7 +414,6 @@ class CogitoGraphExtractor:
             if lex.swapped:
                 rec["s"], rec["o"] = o, s
                 rec["s_span"], rec["o_span"] = rec["o_span"], rec["s_span"]
-        return recs
 
     def extract_batch(self, texts: list, candidates: list | None = None,
                       lang: str = "eng_Latn") -> list:

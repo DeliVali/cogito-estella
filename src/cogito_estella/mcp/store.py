@@ -6,7 +6,7 @@ import hashlib
 import re
 import sys
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +14,7 @@ from pathlib import Path
 from cogito_estella.mcp.tokens import Ledger, ntok
 
 BATCH = 64
+DIVIDER = "~ class-only, verify with provenance:"
 
 
 @dataclass
@@ -132,7 +133,7 @@ class GraphStore:
     def sentence_of(self, edge: dict) -> str:
         return self.docs[edge["source"]]["sents"][edge["sent_idx"]][0]
 
-    # -- rendering helpers (tool renderers arrive in Task 4) --------------------
+    # -- rendering helpers --------------------------------------------------------
     @staticmethod
     def render_edges(edges: list[dict]) -> str:
         groups: dict[tuple, list[int]] = {}
@@ -140,6 +141,104 @@ class GraphStore:
             groups.setdefault((e["s"], e["r"], e["o"]), []).append(e["id"])
         return "\n".join(f"{s} {r} {o} #{','.join(map(str, ids))}"
                          for (s, r, o), ids in groups.items())
+
+    # -- retrieval ----------------------------------------------------------------
+    def resolve(self, name: str) -> str | None:
+        q = name.strip().lower()
+        if q in self.adj:
+            return q
+        cands = [e for e in self.adj
+                 if e.startswith(q) or (len(e) >= 3 and q.startswith(e))
+                 or (len(q) >= 4 and q in e)]
+        if not cands and q.endswith("s"):
+            return self.resolve(q[:-1])
+        return max(cands, key=lambda e: len(self.adj[e])) if cands else None
+
+    def neighborhood(self, entity: str, hops: int = 1) -> list[dict]:
+        seen_e, seen_edges, out = {entity}, set(), []
+        frontier = deque([(entity, 0)])
+        while frontier:
+            node, d = frontier.popleft()
+            if d >= hops:
+                continue
+            for eid in self.adj[node]:
+                if eid in seen_edges:
+                    continue
+                seen_edges.add(eid)
+                e = self.edges[eid]
+                out.append(e)
+                other = e["o"] if e["s"] == node else e["s"]
+                if other not in seen_e:
+                    seen_e.add(other)
+                    frontier.append((other, d + 1))
+        return out
+
+    def top_entities(self, limit: int = 30, prefix: str = "") -> list[str]:
+        ents = [e for e in self.adj if e.startswith(prefix.lower())]
+        ents.sort(key=lambda e: -len(self.adj[e]))
+        return ents[:limit]
+
+    # -- tool-facing renderers ------------------------------------------------------
+    def query(self, entity: str, hops: int = 1, limit: int = 25) -> str:
+        node = self.resolve(entity)
+        if node is None:
+            known = ", ".join(self.top_entities(10)) or "(empty graph)"
+            return f"no entity matches '{entity}'. known (by degree): {known}"
+        edges = self.neighborhood(node, hops)
+        lex = [e for e in edges if e["r_lex"]]
+        fb = [e for e in edges if not e["r_lex"]]
+        lex_lines = self.render_edges(lex).split("\n") if lex else []
+        fb_lines = self.render_edges(fb).split("\n") if fb else []
+        total = len(lex_lines) + len(fb_lines)
+        shown_lex = lex_lines[:limit]
+        shown_fb = fb_lines[:max(limit - len(shown_lex), 0)]
+        body = shown_lex + ([DIVIDER] + shown_fb if shown_fb else [])
+        shown = len(shown_lex) + len(shown_fb)
+        more = "" if shown >= total else f"\n+{total - shown} more (raise limit)"
+        return f"{node} ({total} facts, hops={hops})\n" + "\n".join(body) + more
+
+    def provenance(self, ids: list[int]) -> str:
+        out = []
+        for i in ids:
+            e = self.edges.get(i)
+            if e is None:
+                out.append(f"#{i}: retired edge (document replaced)" if 0 <= i < self.next_id
+                           else f"#{i}: unknown edge")
+                continue
+            sp = lambda x: f"[{x[0]}:{x[1]}]" if x else "[-]"
+            out.append(f"#{i} {e['s']} {e['r']} {e['o']}  {e['source']} s{e['sent_idx']} "
+                       f"{sp(e['s_span'])}/{sp(e['o_span'])}\n  \"{self.sentence_of(e)}\"")
+        return "\n".join(out)
+
+    def search(self, term: str, limit: int = 8) -> str:
+        t = term.strip().lower()
+        hits = [f"{src} s{i}: \"{s}\"" for src, d in self.docs.items()
+                for i, (s, _) in enumerate(d["sents"]) if t in s.lower()]
+        more = "" if len(hits) <= limit else f"\n+{len(hits) - limit} more (raise limit)"
+        return ("\n".join(hits[:limit]) + more) if hits else f"no sentence mentions '{term}'"
+
+    def entities(self, prefix: str = "", limit: int = 30) -> str:
+        ents = self.top_entities(limit, prefix)
+        return ", ".join(f"{e}({len(self.adj[e])})" for e in ents) or "(empty graph)"
+
+    def stats(self) -> str:
+        L = self.ledger
+        full = ntok(self.render_edges(list(self.edges.values()))) if self.edges else 0
+        calls = sum(L.calls.values())
+        by = ", ".join(f"{k}={v}" for k, v in L.served_by.items()) or "-"
+        lex = sum(1 for e in self.edges.values() if e["r_lex"])
+        gf = (f"graph_file={self.path} size={self.path.stat().st_size} "
+              f"persisted_at={self.persisted_at}") if self.path and self.path.exists() \
+            else "graph_file=none"
+        return "\n".join([
+            (f"docs={len(self.docs)} sentences={sum(d['sentences'] for d in self.docs.values())} "
+             f"edges={len(self.edges)} lexical={lex} entities={len(self.adj)}"),
+            f"raw_tokens_ingested={L.raw_tokens}  (what Read-ing every doc costs)",
+            f"full_graph_tokens={full}  (compression {L.raw_tokens / max(full, 1):.1f}x)",
+            f"tokens_served_to_agent={L.served} over {calls} calls: {by}",
+            f"savings_vs_read={L.raw_tokens / max(L.served, 1):.1f}x",
+            gf,
+        ])
 
     # -- persistence (Task 5) ---------------------------------------------------
     def save(self) -> None:

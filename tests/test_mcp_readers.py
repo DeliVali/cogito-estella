@@ -36,6 +36,16 @@ def test_html_without_article_falls_back_to_body():
     assert html_to_text("<html><body><p>Only body.</p></body></html>") == "Only body."
 
 
+def test_html_without_article_keeps_only_body():
+    html = ("<html><head><title>Page Title Should Not Appear</title></head>"
+            "<body><p>Only body.</p></body></html>")
+    assert html_to_text(html) == "Only body."
+
+
+def test_html_fragment_without_body_is_kept():
+    assert html_to_text("<p>Only body.</p>") == "Only body."
+
+
 def test_read_source_txt_md_html(tmp_path):
     (tmp_path / "a.txt").write_text("Plain text.")
     (tmp_path / "b.md").write_text("# Title\n\nBody.")
@@ -82,3 +92,17 @@ def test_ingest_path_reports_per_document_and_errors(tmp_path, fake_extractor):
     lines = [o if isinstance(o, str) else o.line() for o in out]
     assert any(ln.startswith("source=a.txt status=ingested") for ln in lines)
     assert any(ln.startswith("source=bad.pdf error=") for ln in lines)
+
+
+def test_ingest_path_single_bad_file_returns_error_line(tmp_path, fake_extractor):
+    st = GraphStore(extractor=fake_extractor({}))
+    bad = tmp_path / "x.py"
+    bad.write_text("x")
+    out = st.ingest_path(bad)
+    assert len(out) == 1
+    assert out[0].startswith(f"source={bad} error=unsupported")
+
+    missing = tmp_path / "does-not-exist.txt"
+    out = st.ingest_path(missing)
+    assert len(out) == 1
+    assert out[0].startswith(f"source={missing} error=no such file")

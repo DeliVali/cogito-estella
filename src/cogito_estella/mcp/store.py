@@ -111,6 +111,20 @@ class GraphStore:
         return IngestResult(source, status, len(sents), n_new, raw, graph_tok,
                             round(raw / max(graph_tok, 1), 1), round(time.time() - t0, 2))
 
+    def ingest_path(self, path: str | Path) -> list[IngestResult | str]:
+        """Ingest a file or directory; one IngestResult per document, or an
+        error line `source=<name> error=<message>` (unreadable or empty)."""
+        from cogito_estella.mcp.readers import ReaderError, iter_sources
+        out: list[IngestResult | str] = []
+        for name, item in iter_sources(Path(path)):
+            if isinstance(item, ReaderError):
+                out.append(f"source={name} error={item}")
+            elif not item.strip():
+                out.append(f"source={name} error=empty document")
+            else:
+                out.append(self.ingest_text(item, name))
+        return out
+
     def _add_edge(self, rec: dict) -> None:
         self.edges[rec["id"]] = rec
         self.adj[rec["s"]].append(rec["id"])

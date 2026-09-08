@@ -49,6 +49,15 @@ def test_corrupt_file_is_renamed_and_store_starts_empty(tmp_path, fake_extractor
     assert st.edges == {} and "corrupt" in capsys.readouterr().err
 
 
+def test_non_object_json_is_treated_as_corrupt(tmp_path, fake_extractor, capsys):
+    path = tmp_path / "graph.json"
+    path.write_text("[]")
+    st = GraphStore(extractor=fake_extractor({}), path=path)
+    st.load()
+    assert not path.exists() and list(tmp_path.glob("graph.json.corrupt-*"))
+    assert st.edges == {} and "corrupt" in capsys.readouterr().err
+
+
 def test_no_path_means_no_file(tmp_path, fake_extractor):
     st = GraphStore(extractor=fake_extractor(TRIPLES))
     st.ingest_text(DOC, "t")

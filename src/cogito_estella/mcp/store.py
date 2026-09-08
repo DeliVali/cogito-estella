@@ -260,6 +260,8 @@ class GraphStore:
             return
         try:
             data = json.loads(self.path.read_text())
+            if not isinstance(data, dict):
+                raise ValueError("graph file is not a JSON object")  # noqa: TRY004
             if data.get("version") != 1:
                 raise ValueError(f"unsupported graph file version {data.get('version')!r}")
             edges = {int(i): e for i, e in data["edges"].items()}

@@ -1,7 +1,6 @@
 """Documents to plain text: txt/md verbatim, arXiv/LaTeXML-aware HTML, optional PDF."""
 from __future__ import annotations
 
-import html as htmllib
 import re
 from html.parser import HTMLParser
 from pathlib import Path
@@ -22,20 +21,25 @@ class ReaderError(Exception):
 
 class _Extractor(HTMLParser):
     """Collects prose inside <article> when present, else inside <body>, else the
-    whole document (a bare fragment with neither tag)."""
+    whole document (a bare fragment with neither tag). Scope is decided from the
+    parse (real tag depth), never from a raw substring search — text that merely
+    looks like a tag inside <script>/<style> CDATA or an HTML comment never
+    reaches handle_starttag, so it cannot fake article/body scope."""
 
-    def __init__(self, article_mode: bool, body_mode: bool):
+    def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.article_mode = article_mode
-        self.body_mode = body_mode
         self.depth_article = 0
         self.depth_body = 0
         self.skip: list[str] = []
-        self.chunks: list[str] = []
+        # (text, in_article, in_body) at the moment each chunk was captured
+        self.chunks: list[tuple[str, bool, bool]] = []
 
     def _trigger(self, tag, attrs) -> bool:
         tokens = (dict(attrs).get("class") or "").split()
         return tag in _DROP_TAGS or any(c in _DROP_CLASSES for c in tokens)
+
+    def _append(self, text: str) -> None:
+        self.chunks.append((text, self.depth_article > 0, self.depth_body > 0))
 
     def handle_starttag(self, tag, attrs):
         if tag == "article":
@@ -44,7 +48,7 @@ class _Extractor(HTMLParser):
             self.depth_body += 1
         trigger = self._trigger(tag, attrs)
         if tag in _BLOCK and not self.skip and not trigger:
-            self.chunks.append("\n")
+            self._append("\n")
         if tag not in _VOID and (self.skip or trigger):
             self.skip.append(tag)
 
@@ -57,21 +61,17 @@ class _Extractor(HTMLParser):
             self.skip.pop()
 
     def handle_data(self, data):
-        if self.article_mode:
-            inside = self.depth_article > 0
-        elif self.body_mode:
-            inside = self.depth_body > 0
-        else:
-            inside = True
-        if inside and not self.skip:
-            self.chunks.append(data)
+        if not self.skip:
+            self._append(data)
 
 
 def html_to_text(raw: str) -> str:
-    lower = raw.lower()
-    parser = _Extractor(article_mode="<article" in lower, body_mode="<body" in lower)
+    parser = _Extractor()
     parser.feed(raw)
-    text = htmllib.unescape("".join(parser.chunks)).replace("\xa0", " ")
+    article = [t for t, in_a, _ in parser.chunks if in_a]
+    body = [t for t, _, in_b in parser.chunks if in_b]
+    chosen = article or body or [t for t, _, _ in parser.chunks]
+    text = "".join(chosen).replace("\xa0", " ")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n[ \t]*", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -93,9 +93,9 @@ def pdf_to_text(path: Path) -> str:
 def _read_file(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in (".txt", ".md"):
-        return path.read_text(errors="ignore")
+        return path.read_text(encoding="utf-8", errors="ignore")
     if suffix in (".html", ".htm"):
-        return html_to_text(path.read_text(errors="ignore"))
+        return html_to_text(path.read_text(encoding="utf-8", errors="ignore"))
     if suffix == ".pdf":
         return pdf_to_text(path)
     raise ReaderError(f"unsupported file type {suffix!r} ({path.name}); "

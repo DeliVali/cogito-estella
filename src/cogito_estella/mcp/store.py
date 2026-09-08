@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from collections import defaultdict, deque
 from contextlib import redirect_stdout
@@ -49,6 +50,7 @@ class GraphStore:
         self.docs: dict[str, dict] = {}
         self.ledger = Ledger()
         self.persisted_at: str | None = None
+        self._lock = threading.RLock()     # sync tools run in worker threads: serialize mutation
 
     @property
     def extractor(self):
@@ -75,54 +77,62 @@ class GraphStore:
             cursor = i + len(s)
         return out
 
-    def ingest_text(self, text: str, source: str) -> IngestResult:
-        t0 = time.time()
-        digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
-        prev = self.docs.get(source)
-        if prev and prev["sha256"] == digest:
-            return IngestResult(source, "unchanged", prev["sentences"], 0, prev["tokens"],
-                                0, 0.0, round(time.time() - t0, 2))
-        status = "replaced" if prev else "ingested"
-        if prev:
-            self.drop_source(source)
-        ex = self.extractor
-        sents = self.split(text)
-        texts = [s for s, _ in sents]
-        offsets = [o for _, o in sents]
-        recs_per: list[list[dict]] = []
-        with redirect_stdout(sys.stderr):
-            for i in range(0, len(texts), BATCH):
-                recs_per.extend(ex.extract_batch_with_provenance(
-                    texts[i:i + BATCH], doc_offsets=offsets[i:i + BATCH]))
-        n_new = 0
-        for k, recs in enumerate(recs_per):
-            for rec in recs:
-                rec.pop("sentence", None)
-                rec.update(id=self.next_id, source=source, sent_idx=k)
-                self._add_edge(rec)
-                n_new += 1
-        raw = ntok(text)
-        self.ledger.raw_tokens += raw
-        self.docs[source] = {"sha256": digest, "tokens": raw, "sentences": len(sents),
-                             "sents": sents}
-        graph_tok = ntok(self.render_edges(
-            [e for e in self.edges.values() if e["source"] == source]))
-        self.save()
-        return IngestResult(source, status, len(sents), n_new, raw, graph_tok,
-                            round(raw / max(graph_tok, 1), 1), round(time.time() - t0, 2))
+    def ingest_text(self, text: str, source: str, save: bool = True) -> IngestResult:
+        with self._lock:
+            t0 = time.time()
+            digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
+            prev = self.docs.get(source)
+            if prev and prev["sha256"] == digest:
+                return IngestResult(source, "unchanged", prev["sentences"], 0, prev["tokens"],
+                                    0, 0.0, round(time.time() - t0, 2))
+            status = "replaced" if prev else "ingested"
+            if prev:
+                self.drop_source(source)
+            ex = self.extractor
+            sents = self.split(text)
+            texts = [s for s, _ in sents]
+            offsets = [o for _, o in sents]
+            recs_per: list[list[dict]] = []
+            with redirect_stdout(sys.stderr):
+                for i in range(0, len(texts), BATCH):
+                    recs_per.extend(ex.extract_batch_with_provenance(
+                        texts[i:i + BATCH], doc_offsets=offsets[i:i + BATCH]))
+            n_new = 0
+            for k, recs in enumerate(recs_per):
+                for rec in recs:
+                    rec.pop("sentence", None)
+                    rec.update(id=self.next_id, source=source, sent_idx=k)
+                    self._add_edge(rec)
+                    n_new += 1
+            raw = ntok(text)
+            self.docs[source] = {"sha256": digest, "tokens": raw, "sentences": len(sents),
+                                 "sents": sents}
+            self._sync_raw_tokens()
+            graph_tok = ntok(self.render_edges(
+                [e for e in self.edges.values() if e["source"] == source]))
+            if save:
+                self.save()
+            return IngestResult(source, status, len(sents), n_new, raw, graph_tok,
+                                round(raw / max(graph_tok, 1), 1), round(time.time() - t0, 2))
 
     def ingest_path(self, path: str | Path) -> list[IngestResult | str]:
         """Ingest a file or directory; one IngestResult per document, or an
-        error line `source=<name> error=<message>` (unreadable or empty)."""
+        error line `source=<name> error=<message>` (unreadable or empty).
+        Saves once at the end, not once per document."""
         from cogito_estella.mcp.readers import ReaderError, iter_sources
         out: list[IngestResult | str] = []
-        for name, item in iter_sources(Path(path)):
-            if isinstance(item, ReaderError):
-                out.append(f"source={name} error={item}")
-            elif not item.strip():
-                out.append(f"source={name} error=empty document")
-            else:
-                out.append(self.ingest_text(item, name))
+        with self._lock:
+            for name, item in iter_sources(Path(path)):
+                if isinstance(item, ReaderError):
+                    out.append(f"source={name} error={item}")
+                elif not item.strip():
+                    out.append(f"source={name} error=empty document")
+                else:
+                    out.append(self.ingest_text(item, name, save=False))
+            if not out:
+                out.append(f"source={path} error=no supported documents "
+                           "(txt, md, html, htm, pdf)")
+            self.save()
         return out
 
     def _add_edge(self, rec: dict) -> None:
@@ -133,19 +143,32 @@ class GraphStore:
 
     def drop_source(self, source: str) -> int:
         """Retire every edge of `source`; ids are not reused. Returns edges dropped."""
-        gone = [i for i, e in self.edges.items() if e["source"] == source]
-        for i in gone:
-            del self.edges[i]
-        self.docs.pop(source, None)
-        self._rebuild_adj()
-        return len(gone)
+        with self._lock:
+            gone = [i for i, e in self.edges.items() if e["source"] == source]
+            for i in gone:
+                del self.edges[i]
+            self.docs.pop(source, None)
+            self._rebuild_adj()
+            self._sync_raw_tokens()
+            return len(gone)
+
+    @staticmethod
+    def _adjacency(edges: dict[int, dict]) -> dict[str, list[int]]:
+        """Adjacency for a parsed edges mapping; raises KeyError on a malformed edge."""
+        adj: dict[str, list[int]] = defaultdict(list)
+        for i in sorted(edges):
+            e = edges[i]
+            adj[e["s"]].append(i)
+            adj[e["o"]].append(i)
+        return adj
 
     def _rebuild_adj(self) -> None:
-        self.adj = defaultdict(list)
-        for i in sorted(self.edges):
-            e = self.edges[i]
-            self.adj[e["s"]].append(i)
-            self.adj[e["o"]].append(i)
+        self.adj = self._adjacency(self.edges)
+
+    def _sync_raw_tokens(self) -> None:
+        """raw_tokens is derived from the currently stored documents, never accumulated:
+        a replaced document must not double-count its old and new token totals."""
+        self.ledger.raw_tokens = sum(d["tokens"] for d in self.docs.values())
 
     def sentence_of(self, edge: dict) -> str:
         return self.docs[edge["source"]]["sents"][edge["sent_idx"]][0]
@@ -162,8 +185,12 @@ class GraphStore:
     # -- retrieval ----------------------------------------------------------------
     def resolve(self, name: str) -> str | None:
         q = name.strip().lower()
+        if not q:
+            return None
         if q in self.adj:
             return q
+        if len(q) < 2:               # too short for prefix/substring/plural guessing
+            return None
         cands = [e for e in self.adj
                  if e.startswith(q) or (len(e) >= 3 and q.startswith(e))
                  or (len(q) >= 4 and q in e)]
@@ -178,7 +205,7 @@ class GraphStore:
             node, d = frontier.popleft()
             if d >= hops:
                 continue
-            for eid in self.adj[node]:
+            for eid in self.adj.get(node, ()):
                 if eid in seen_edges:
                     continue
                 seen_edges.add(eid)
@@ -261,36 +288,49 @@ class GraphStore:
     def save(self) -> None:
         if self.path is None:
             return
-        data = {"version": 1, "next_id": self.next_id, "raw_tokens": self.ledger.raw_tokens,
-                "docs": self.docs, "edges": {str(i): e for i, e in self.edges.items()}}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False))
-        os.replace(tmp, self.path)
-        self.persisted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
+        with self._lock:
+            data = {"version": 1, "next_id": self.next_id,
+                    "raw_tokens": self.ledger.raw_tokens, "docs": self.docs,
+                    "edges": {str(i): e for i, e in self.edges.items()}}
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # unique per writer: two concurrent ingests must not share (and race on)
+            # the same temp file
+            tmp = self.path.with_name(
+                f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.path)
+            self.persisted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
 
     def load(self) -> None:
         if self.path is None or not self.path.exists():
             return
-        try:
-            data = json.loads(self.path.read_text())
-            if not isinstance(data, dict):
-                raise ValueError("graph file is not a JSON object")  # noqa: TRY004
-            if data.get("version") != 1:
-                raise ValueError(f"unsupported graph file version {data.get('version')!r}")
-            edges = {int(i): e for i, e in data["edges"].items()}
-            docs = {src: {**d, "sents": [tuple(x) for x in d["sents"]]}
-                    for src, d in data["docs"].items()}
-            next_id, raw = int(data["next_id"]), int(data["raw_tokens"])
-        except (ValueError, KeyError, TypeError) as exc:
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")  # noqa: UP017
-            bad = self.path.with_name(f"{self.path.name}.corrupt-{stamp}")
-            os.replace(self.path, bad)
-            print(f"cogito-mcp: graph file corrupt ({exc}); moved to {bad}; starting empty",
-                  file=sys.stderr)
-            return
-        self.edges, self.docs, self.next_id = edges, docs, next_id
-        self.ledger.raw_tokens = raw
-        self._rebuild_adj()
-        self.persisted_at = datetime.fromtimestamp(
-            self.path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
+        with self._lock:
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("graph file is not a JSON object")  # noqa: TRY004
+                v = data.get("version")
+                if v != 1:
+                    raise ValueError(
+                        f"unsupported graph file version {v!r}; this build reads version 1")
+                edges_raw, docs_raw = data.get("edges"), data.get("docs")
+                if not isinstance(edges_raw, dict) or not isinstance(docs_raw, dict):
+                    raise ValueError("graph file has malformed sections")  # noqa: TRY004
+                edges = {int(i): e for i, e in edges_raw.items()}
+                docs = {src: {**d, "sents": [tuple(x) for x in d["sents"]]}
+                        for src, d in docs_raw.items()}
+                next_id = int(data["next_id"])
+                adj = self._adjacency(edges)    # raises KeyError on a malformed edge
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")  # noqa: UP017
+                bad = self.path.with_name(f"{self.path.name}.corrupt-{stamp}")
+                os.replace(self.path, bad)
+                print(f"cogito-mcp: graph file corrupt ({exc}); moved to {bad}; starting empty",
+                      file=sys.stderr)
+                return
+            # only commit once every section parsed cleanly: never half-load
+            self.edges, self.docs, self.adj = edges, docs, adj
+            self.next_id = max(next_id, max(edges, default=-1) + 1)
+            self._sync_raw_tokens()
+            self.persisted_at = datetime.fromtimestamp(
+                self.path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")  # noqa: UP017

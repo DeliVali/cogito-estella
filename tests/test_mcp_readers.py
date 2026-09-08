@@ -106,3 +106,29 @@ def test_ingest_path_single_bad_file_returns_error_line(tmp_path, fake_extractor
     out = st.ingest_path(missing)
     assert len(out) == 1
     assert out[0].startswith(f"source={missing} error=no such file")
+
+
+# -- finding 2: readers decode UTF-8 explicitly, not the locale encoding ---------------
+
+def test_readers_decode_utf8(tmp_path):
+    text = "café — naïve"
+    (tmp_path / "a.txt").write_bytes(text.encode("utf-8"))
+    assert read_source(tmp_path / "a.txt") == [(str(tmp_path / "a.txt"), text)]
+
+
+# -- finding 4: <article>/<body> scope comes from the parse, not a raw substring -------
+
+def test_article_like_text_inside_script_does_not_trigger_article_scope():
+    html = "<script>var s='<article>';</script><p>Real body.</p>"
+    assert html_to_text(html) == "Real body."
+
+
+def test_article_like_text_inside_comment_does_not_trigger_article_scope():
+    html = "<!-- <article> --><p>Body</p>"
+    assert html_to_text(html) == "Body"
+
+
+# -- finding 15: convert_charrefs already unescapes; no second unescape pass -----------
+
+def test_html_to_text_does_not_double_unescape_entities():
+    assert html_to_text("<p>&amp;lt;</p>") == "&lt;"

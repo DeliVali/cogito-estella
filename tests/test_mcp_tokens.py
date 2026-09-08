@@ -31,8 +31,8 @@ def test_ledger_charges_per_tool():
 def test_ntok_falls_back_when_encoding_load_raises_value_error(monkeypatch):
     """Verify ntok falls back when tiktoken.get_encoding raises ValueError (hash mismatch)."""
     import cogito_estella.mcp.tokens as t
-    t._TRIED = False
-    t._ENC = None
+    monkeypatch.setattr(t, "_TRIED", False)
+    monkeypatch.setattr(t, "_ENC", None)
 
     fake_tiktoken = types.ModuleType("tiktoken")
     def raise_value_error(*args, **kwargs):
@@ -45,12 +45,12 @@ def test_ntok_falls_back_when_encoding_load_raises_value_error(monkeypatch):
     assert t._ENC is None
 
 
-def test_ntok_counts_text_with_special_tokens():
+def test_ntok_counts_text_with_special_tokens(monkeypatch):
     """Verify ntok counts text containing disallowed special tokens without raising."""
     pytest.importorskip("tiktoken")
     import cogito_estella.mcp.tokens as t
-    t._TRIED = False
-    t._ENC = None
+    monkeypatch.setattr(t, "_TRIED", False)
+    monkeypatch.setattr(t, "_ENC", None)
 
     n = t.ntok("hello <|endoftext|> world")
     assert n >= 3

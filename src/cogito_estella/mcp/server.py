@@ -49,19 +49,25 @@ class Tools:
                                                  for r in results))
 
     def query(self, entity: str, hops: int = 1, limit: int = 25) -> str:
+        limit = max(1, int(limit))
         return self._charge("query", self.store.query(entity, hops, limit))
 
     def provenance(self, edge_ids: str) -> str:
         ids = [int(x) for x in re.findall(r"\d+", edge_ids)]
+        if not ids:
+            return self._charge("provenance", f"no edge ids in {edge_ids!r}")
         return self._charge("provenance", self.store.provenance(ids))
 
     def search(self, term: str, limit: int = 8) -> str:
+        limit = max(1, int(limit))
         return self._charge("search", self.store.search(term, limit))
 
     def entities(self, prefix: str = "", limit: int = 30) -> str:
+        limit = max(1, int(limit))
         return self._charge("entities", self.store.entities(prefix, limit))
 
     def stats(self) -> str:
+        # introspection is not charged: it would count itself
         return self.store.stats()
 
 
@@ -117,6 +123,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     return ap.parse_args(argv)
 
 
+def _exit_missing_dependency(exc: ImportError) -> None:
+    sys.exit(f"cogito-mcp: missing optional dependency {exc.name}; "
+             "install with: pip install 'cogito-estella[mcp]'")
+
+
 def main(argv=None) -> None:
     ns = parse_args(argv)
     try:
@@ -124,6 +135,8 @@ def main(argv=None) -> None:
         ensure_spacy_model(download=ns.download)
     except WeightsError as exc:
         sys.exit(f"cogito-mcp: {exc}")
+    except ImportError as exc:
+        _exit_missing_dependency(exc)
 
     def factory():
         from cogito_estella.integrations.llamaindex_connector import CogitoGraphExtractor
@@ -133,7 +146,10 @@ def main(argv=None) -> None:
     store.load()
     print(f"cogito-mcp: graph {store.path} edges={len(store.edges)} docs={len(store.docs)}",
           file=sys.stderr)
-    build_server(store).run("stdio")
+    try:
+        build_server(store).run("stdio")
+    except ImportError as exc:
+        _exit_missing_dependency(exc)
 
 
 if __name__ == "__main__":

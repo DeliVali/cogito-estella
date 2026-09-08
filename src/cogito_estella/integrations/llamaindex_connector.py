@@ -381,6 +381,8 @@ class CogitoGraphExtractor:
                                       lang: str = "eng_Latn") -> list:
         """Batched `extract_with_provenance`: one encoder call for N texts, then per-text
         span map + lexicalization. Returns record lists aligned with `texts`."""
+        if doc_offsets is not None and len(doc_offsets) != len(texts):
+            raise ValueError("doc_offsets must align with texts")
         triples_per = self.extract_batch(texts, candidates=candidates, lang=lang)
         nlp = self._scanner() or None
         offsets = doc_offsets or [0] * len(texts)

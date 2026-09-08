@@ -1,6 +1,8 @@
 """Span-level provenance: each edge can point back to the exact source sentence and the
 character spans of the surface mentions that produced its nodes."""
 
+import pytest
+
 from cogito_estella.integrations.llamaindex_connector import (
     CogitoGraphExtractor,
     candidate_spans,
@@ -160,3 +162,13 @@ def test_extract_batch_with_provenance_matches_single_path(monkeypatch, nlp):
     # "encoder" at 4..11, offset 100; the parser reorients this sentence (swapped=True),
     # so "encoder" lands in o_span rather than s_span — asserted via `single` equality above.
     assert batch[1][0]["o_span"] == [104, 111]
+
+
+# -- finding 14: doc_offsets must align 1:1 with texts ---------------------------------
+
+def test_extract_batch_with_provenance_rejects_misaligned_offsets():
+    from cogito_estella.integrations import llamaindex_connector as lc
+    ex = object.__new__(lc.CogitoGraphExtractor)
+    ex.ent2id, ex._nlp = {}, False
+    with pytest.raises(ValueError, match="doc_offsets"):
+        ex.extract_batch_with_provenance(["a", "b"], doc_offsets=[0])

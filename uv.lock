@@ -336,6 +336,7 @@ graph = [
     { name = "neo4j" },
 ]
 mcp = [
+    { name = "huggingface-hub" },
     { name = "mcp" },
     { name = "sonar-space" },
     { name = "spacy" },
@@ -359,6 +360,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", marker = "extra == 'data'", specifier = ">=3.0" },
+    { name = "huggingface-hub", marker = "extra == 'mcp'", specifier = ">=0.23" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.1" },
     { name = "neo4j", marker = "extra == 'graph'", specifier = ">=5.0" },
     { name = "networkx", specifier = ">=3.0" },

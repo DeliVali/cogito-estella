@@ -69,6 +69,74 @@ def test_parse_args_defaults():
     assert ns.checkpoint == ["a.pt", "b.pt"] and ns.download is False and ns.device == "cpu"
 
 
+# -- finding 5: an empty (or all-unsupported) directory reports an error line ----------
+
+def test_ingest_empty_directory_reports_no_supported_documents(tools, tmp_path):
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    out = tools.ingest(str(empty_dir))
+    assert out.startswith("source=")
+    assert "no supported documents" in out
+
+
+# -- finding 10: limit is clamped to at least 1 for query/search/entities -------------
+
+def test_query_limit_zero_or_negative_is_clamped_to_one(tools):
+    tools.ingest(DOC)
+    out0 = tools.query("sonar", limit=0)
+    out1 = tools.query("sonar", limit=1)
+    outm1 = tools.query("sonar", limit=-1)
+    assert out0 == out1 == outm1
+
+
+def test_search_limit_zero_or_negative_is_clamped_to_one(tools):
+    tools.ingest(DOC)
+    assert tools.search("The", limit=0) == tools.search("The", limit=1)
+    assert tools.search("The", limit=-1) == tools.search("The", limit=1)
+
+
+def test_entities_limit_zero_or_negative_is_clamped_to_one(tools):
+    tools.ingest(DOC)
+    assert tools.entities(limit=0) == tools.entities(limit=1)
+    assert tools.entities(limit=-1) == tools.entities(limit=1)
+
+
+# -- finding 11: an empty provenance query is a charged, explicit reply ---------------
+
+def test_provenance_empty_string_reports_no_ids(tools):
+    before = tools.store.ledger.calls["provenance"]
+    out = tools.provenance("")
+    assert out == "no edge ids in ''"
+    assert tools.store.ledger.calls["provenance"] == before + 1
+
+
+# -- finding 13: a missing optional dependency exits with an install hint ------------
+
+def test_main_missing_dependency_at_weight_resolution_exits_with_install_hint(monkeypatch, tmp_path):
+    import cogito_estella.mcp.server as srv
+
+    def boom(*a, **k):
+        raise ImportError("No module named 'spacy'", name="spacy")
+    monkeypatch.setattr(srv, "resolve", lambda *a, **k: ([], Path("v.json")))
+    monkeypatch.setattr(srv, "ensure_spacy_model", boom)
+    with pytest.raises(SystemExit) as exc:
+        srv.main(["--dir", str(tmp_path)])
+    assert "spacy" in str(exc.value) and "cogito-estella[mcp]" in str(exc.value)
+
+
+def test_main_missing_mcp_sdk_exits_with_install_hint(monkeypatch, tmp_path):
+    import cogito_estella.mcp.server as srv
+
+    def boom(store):
+        raise ImportError("No module named 'mcp'", name="mcp")
+    monkeypatch.setattr(srv, "resolve", lambda *a, **k: ([], Path("v.json")))
+    monkeypatch.setattr(srv, "ensure_spacy_model", lambda **k: None)
+    monkeypatch.setattr(srv, "build_server", boom)
+    with pytest.raises(SystemExit) as exc:
+        srv.main(["--dir", str(tmp_path)])
+    assert "mcp" in str(exc.value) and "cogito-estella[mcp]" in str(exc.value)
+
+
 @pytest.mark.integration
 def test_stdio_smoke_persists_across_restarts(tmp_path):
     """Needs GPU-or-CPU weights on disk (COGITO_MCP_CHECKPOINTS / COGITO_MCP_VOCAB env)."""

@@ -30,6 +30,7 @@ mcp = [
     "sonar-space>=0.5.0",
     "wtpsplit>=2.1",
     "tiktoken>=0.7",
+    "huggingface-hub>=0.23",
 ]
 pdf = [
     "pypdf>=4",

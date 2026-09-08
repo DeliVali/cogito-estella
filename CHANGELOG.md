@@ -8,9 +8,10 @@ Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemV
 - **MCP server** (`cogito_estella.mcp`, console script `cogito-mcp`, extra `[mcp]`): six tools (`ingest`, `query`, `provenance`, `search`, `entities`, `stats`) over a per-project graph persisted in `<dir>/graph.json`; documents deduplicated by content hash and replaced when they change; `query` separates syntax-derived facts from class-only facts with a divider so agents know what to verify.
 - Readers for `.txt`, `.md`, arXiv/LaTeXML `.html` and directories; `.pdf` via extra `[pdf]`.
 - Default weights resolved from Hugging Face (`cogito-prose-ontology*.pt`, `vocab-onto.json`) with `--checkpoint`/`--vocab` overrides and `--no-download`.
+- Persistence is thread-safe (`GraphStore` serializes ingestion and save/load behind a lock) and reads/writes `graph.json` as UTF-8; a malformed graph file (non-dict sections, a broken edge) is recovered atomically instead of half-loading; `raw_tokens` is derived from the currently stored documents so a replaced document is never double-counted.
 
 ### Changed
-- `CogitoGraphExtractor.extract_batch_with_provenance(texts, doc_offsets)`: batched provenance records (one encoder call per batch); `extract_with_provenance` shares the same lexicalization helper.
+- `CogitoGraphExtractor.extract_batch_with_provenance(texts, doc_offsets)`: batched provenance records (one encoder call per batch); `extract_with_provenance` shares the same lexicalization helper; `doc_offsets`, when given, must align with `texts`.
 
 ## [0.13.0] - 2026-09-07
 

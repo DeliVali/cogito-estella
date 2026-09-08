@@ -140,10 +140,11 @@ before relying on them. The graph lives in `<dir>/graph.json` and survives resta
 
 Weights: by default the ontology ensemble (`cogito-prose-ontology*.pt` + `vocab-onto.json`)
 is downloaded from Hugging Face on first run; pass `--checkpoint` (repeatable) and
-`--vocab` to use other files, `--no-download` to fail fast offline.
+`--vocab` to use other files, `--device` to force `cuda`/`cpu` (default: auto-detect),
+`--no-download` to fail fast offline.
 
-Measured on a 902-question benchmark over 20 documents: graph-first, text-on-miss
-answers 97.9 % of questions at 37.7 tokens each vs 1,367 tokens for reading the document.
+The graph directory (`.cogito/` by default) holds your ingested documents; add it to
+your project's `.gitignore` rather than committing it.
 
 ## Use Cases
 

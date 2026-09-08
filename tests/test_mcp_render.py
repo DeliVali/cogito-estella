@@ -77,3 +77,19 @@ def test_search_and_entities_and_stats(store):
     assert ents.startswith("sonar(") or "sonar(" in ents
     st = store.stats()
     assert "docs=1" in st and "edges=" in st and "graph_file=none" in st
+
+
+# -- finding 7: empty or one-letter queries never resolve to the hub -------------------
+
+def test_query_rejects_empty_and_single_letter_names(store):
+    assert store.query("").startswith("no entity matches ''")
+    assert store.query("s").startswith("no entity matches 's'")
+    assert store.query("sonar").startswith("sonar (")
+
+
+# -- finding 20: hops=2 expands across a neighbour and terminates ----------------------
+
+def test_neighborhood_hops_two_reaches_second_degree_neighbor(store):
+    one_hop = {e["id"] for e in store.neighborhood("concept", hops=1)}
+    two_hop = {e["id"] for e in store.neighborhood("concept", hops=2)}
+    assert one_hop < two_hop

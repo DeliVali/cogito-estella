@@ -24,6 +24,19 @@ data = [
 graph = [
     "neo4j>=5.0",
 ]
+mcp = [
+    "mcp>=2.1",
+    "spacy>=3.8",
+    "sonar-space>=0.5.0",
+    "wtpsplit>=2.1",
+    "tiktoken>=0.7",
+]
+pdf = [
+    "pypdf>=4",
+]
+
+[project.scripts]
+cogito-mcp = "cogito_estella.mcp.server:main"
 
 [dependency-groups]
 dev = [
@@ -41,3 +54,6 @@ packages = ["src/cogito_estella"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.pytest.ini_options]
+markers = ["integration: needs model weights on disk (SONAR/SaT or the decoder ensemble)"]

@@ -2,6 +2,16 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.14.0] - 2026-09-08
+
+### Added
+- **MCP server** (`cogito_estella.mcp`, console script `cogito-mcp`, extra `[mcp]`): six tools (`ingest`, `query`, `provenance`, `search`, `entities`, `stats`) over a per-project graph persisted in `<dir>/graph.json`; documents deduplicated by content hash and replaced when they change; `query` separates syntax-derived facts from class-only facts with a divider so agents know what to verify.
+- Readers for `.txt`, `.md`, arXiv/LaTeXML `.html` and directories; `.pdf` via extra `[pdf]`.
+- Default weights resolved from Hugging Face (`cogito-prose-ontology*.pt`, `vocab-onto.json`) with `--checkpoint`/`--vocab` overrides and `--no-download`.
+
+### Changed
+- `CogitoGraphExtractor.extract_batch_with_provenance(texts, doc_offsets)`: batched provenance records (one encoder call per batch); `extract_with_provenance` shares the same lexicalization helper.
+
 ## [0.13.0] - 2026-09-07
 
 ### Added

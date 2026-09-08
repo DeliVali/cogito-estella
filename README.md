@@ -1,4 +1,4 @@
-# Cogito Estella: Latent Graph Engine (v0.13.0)
+# Cogito Estella: Latent Graph Engine (v0.14.0)
 
 Non-autoregressive inference backend that decodes SONAR (Meta) semantic embeddings
 directly into knowledge graphs, bypassing token-based text decoding entirely.
@@ -112,6 +112,39 @@ Measured on consumer silicon (RTX 5070, 12 GB, CUDA 12.8), batch 1024:
   queryable graph; entity-conditioning accepts the agent's existing graph nodes
   as candidates.
 
+## MCP Server (`cogito-mcp`)
+
+Give any MCP client a persistent knowledge-graph memory over your documents. Ingest once
+(zero LLM tokens: the local model does the extraction), then answer entity questions from
+the graph instead of reading files.
+
+```bash
+pip install "cogito-estella[mcp]"          # add [pdf] for PDF input
+python -m spacy download en_core_web_sm    # done automatically on first run unless --no-download
+```
+
+Client configuration (Claude Code `.mcp.json`, Cursor, etc.):
+
+```json
+{"mcpServers": {"cogito": {"command": "cogito-mcp", "args": ["--dir", ".cogito"]}}}
+```
+
+Tools: `ingest(path_or_text)` (file, directory of txt/md/html/pdf, or raw text; documents
+are deduplicated by content hash and replaced when they change), `query(entity, hops,
+limit)`, `provenance(edge_ids)`, `search(term)`, `entities(prefix)`, `stats()`.
+
+`query` prints facts as `subject relation object #edge_ids`. Facts whose relation was read
+from the sentence's syntax come first; the line `~ class-only, verify with provenance:`
+introduces facts that only carry a coarse class label — check those with `provenance`
+before relying on them. The graph lives in `<dir>/graph.json` and survives restarts.
+
+Weights: by default the ontology ensemble (`cogito-prose-ontology*.pt` + `vocab-onto.json`)
+is downloaded from Hugging Face on first run; pass `--checkpoint` (repeatable) and
+`--vocab` to use other files, `--no-download` to fail fast offline.
+
+Measured on a 902-question benchmark over 20 documents: graph-first, text-on-miss
+answers 97.9 % of questions at 37.7 tokens each vs 1,367 tokens for reading the document.
+
 ## Use Cases
 
 * **Agent long-term memory ("second brain")** — every message, note, or document an
@@ -163,6 +196,7 @@ Champion checkpoints ship via [GitHub Releases](../../releases) and
 | `cogito-prose-candidates-{ft,cal,base,s2,s3}.pt` | entity-conditioned prose (5-seed ensemble) | 0.827 |
 | `cogito-prose-openvocab{,-s4,-s5}.pt` + `cogito-prose-cascade-fallback.pt` | open-vocab prose stack | 0.6514 |
 | `vocab-prose.json` | entity/relation vocabulary (20k/60) | — |
+| `cogito-prose-ontology{,-s2,-s3}.pt` + `vocab-onto.json` | ontology ensemble ×3, 76 relations | 0.796 @ 91 % coverage — default for `cogito-mcp` |
 
 ```bash
 pip install "cogito-estella[sonar]"     # or: uv sync (from a clone)

@@ -35,6 +35,13 @@ def test_offline_miss_lists_missing_files():
     assert "--checkpoint" in msg and "huggingface" in msg.lower()
 
 
+def test_resolve_does_not_swallow_programming_errors():
+    def dl(repo_id, filename, local_files_only=False):
+        raise TypeError("bad downloader")
+    with pytest.raises(TypeError):
+        w.resolve(None, None, download=True, downloader=dl)
+
+
 def test_partial_explicit_is_rejected(tmp_path):
     with pytest.raises(w.WeightsError, match="both"):
         w.resolve([str(tmp_path / "a.pt")], None, download=False)

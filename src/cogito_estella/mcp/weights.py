@@ -39,7 +39,7 @@ def resolve(checkpoints: list[str] | None, vocab: str | None, download: bool = T
     for name in (*DEFAULT_CHECKPOINTS, DEFAULT_VOCAB):
         try:
             got.append(Path(dl(HF_REPO, name, local_files_only=not download)))
-        except Exception:  # noqa: BLE001 - downloader raises various types (network, 404, cache)
+        except OSError:  # cache miss offline, network error, 404
             missing.append(name)
     if missing:
         raise WeightsError(f"default weights not available: {', '.join(missing)}. {_HELP}")
@@ -54,5 +54,5 @@ def ensure_spacy_model(download: bool = True, model: str = "en_core_web_sm") -> 
     if not download:
         raise WeightsError(f"spaCy model {model} missing; run: python -m spacy download {model}")
     print(f"cogito-mcp: downloading spaCy model {model}", file=sys.stderr)
-    from spacy.cli import download
-    download(model)
+    from spacy.cli import download as spacy_download
+    spacy_download(model)

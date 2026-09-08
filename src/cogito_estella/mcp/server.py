@@ -16,6 +16,15 @@ INSTRUCTIONS = ("Knowledge-graph memory over documents. `ingest` a file, directo
                 "`search` is the text fallback when the graph has no fact.")
 
 
+def _existing_path(value: str) -> Path | None:
+    """Path when `value` names an existing file or directory; None for raw text."""
+    try:
+        p = Path(value)
+        return p if p.exists() else None
+    except (OSError, ValueError):     # e.g. "File name too long" for a pasted paragraph
+        return None
+
+
 class Tools:
     """Tool bodies bound to one store; plain callables so they can be unit-tested."""
 
@@ -27,8 +36,11 @@ class Tools:
         return out
 
     def ingest(self, path_or_text: str, source: str = "") -> str:
-        p = Path(path_or_text)
-        if p.exists():
+        if not path_or_text.strip():
+            src = source or f"text{len(self.store.docs) + 1}"
+            return self._charge("ingest", f"source={src} error=empty input")
+        p = _existing_path(path_or_text)
+        if p:
             results = self.store.ingest_path(p)
         else:
             src = source or f"text{len(self.store.docs) + 1}"

@@ -47,6 +47,19 @@ def test_build_server_registers_six_tools(tools):
     assert {"ingest", "query", "provenance", "search", "entities", "stats"} <= names
 
 
+def test_ingest_long_raw_text_is_not_treated_as_a_path(tools):
+    text = ("The generated concepts are decoded by SONAR into a sequence of subwords. " * 4).strip()
+    out = tools.ingest(text)
+    assert out.startswith("source=text1 status=ingested")
+
+
+def test_ingest_empty_text_returns_error_line(tools, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "trap.txt").write_text("Do not ingest me.")
+    out = tools.ingest("   ")
+    assert out == "source=text1 error=empty input" and tools.store.docs == {}
+
+
 def test_parse_args_defaults():
     ns = parse_args([])
     assert ns.dir == Path(".cogito") and ns.checkpoint is None and ns.vocab is None

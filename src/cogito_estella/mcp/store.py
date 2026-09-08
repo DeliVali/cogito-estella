@@ -3,12 +3,15 @@ Edge ids are stable and never reused; documents are deduplicated by content hash
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
 import sys
 import time
 from collections import defaultdict, deque
 from contextlib import redirect_stdout
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cogito_estella.mcp.tokens import Ledger, ntok
@@ -240,9 +243,38 @@ class GraphStore:
             gf,
         ])
 
-    # -- persistence (Task 5) ---------------------------------------------------
+    # -- persistence ----------------------------------------------------------------
     def save(self) -> None:
-        return None
+        if self.path is None:
+            return
+        data = {"version": 1, "next_id": self.next_id, "raw_tokens": self.ledger.raw_tokens,
+                "docs": self.docs, "edges": {str(i): e for i, e in self.edges.items()}}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False))
+        os.replace(tmp, self.path)
+        self.persisted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
 
     def load(self) -> None:
-        return None
+        if self.path is None or not self.path.exists():
+            return
+        try:
+            data = json.loads(self.path.read_text())
+            if data.get("version") != 1:
+                raise ValueError(f"unsupported graph file version {data.get('version')!r}")
+            edges = {int(i): e for i, e in data["edges"].items()}
+            docs = {src: {**d, "sents": [tuple(x) for x in d["sents"]]}
+                    for src, d in data["docs"].items()}
+            next_id, raw = int(data["next_id"]), int(data["raw_tokens"])
+        except (ValueError, KeyError, TypeError) as exc:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")  # noqa: UP017
+            bad = self.path.with_name(f"{self.path.name}.corrupt-{stamp}")
+            os.replace(self.path, bad)
+            print(f"cogito-mcp: graph file corrupt ({exc}); moved to {bad}; starting empty",
+                  file=sys.stderr)
+            return
+        self.edges, self.docs, self.next_id = edges, docs, next_id
+        self.ledger.raw_tokens = raw
+        self._rebuild_adj()
+        self.persisted_at = datetime.fromtimestamp(
+            self.path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")  # noqa: UP017

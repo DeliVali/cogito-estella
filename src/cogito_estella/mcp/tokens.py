@@ -15,11 +15,11 @@ def ntok(text: str) -> int:
         try:
             import tiktoken
             _ENC = tiktoken.get_encoding("cl100k_base")
-        except (ImportError, OSError):      # missing package or encoding download blocked
+        except (ImportError, OSError, ValueError):      # missing package, download blocked, or hash mismatch
             _ENC = None
     if _ENC is None:
         return max(1, len(text) // 4)
-    return max(1, len(_ENC.encode(text)))
+    return max(1, len(_ENC.encode(text, disallowed_special=())))
 
 
 class Ledger:

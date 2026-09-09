@@ -25,6 +25,7 @@ DIVIDER = "~ class-only, verify with provenance:"
 FACT_SHARE = 0.4                # of `ask`'s budget; the sentences take the rest
 ASK_ENTITIES = 3                # entities resolved from one question
 ASK_MAX_SKIPS = 32              # consecutive oversize sentences before the fill stops
+ASK_SCORERS = ("auto", "lexical", "sonar")          # the scorer contract of `ask`
 ASK_MAX_IDS = 8                 # ids per fact line in `ask`: one hub group must not eat the cap
 SONAR_COS_FLOOR = 0.2           # below this cosine a sentence is not about the question
 SONAR_FLOOR = (SONAR_COS_FLOOR + 1.0) / 2.0        # the same floor on the scorer's [0, 1] scale
@@ -349,6 +350,9 @@ class GraphStore:
 
     def ask(self, question: str, budget: int = 600, scorer: str = "auto") -> str:
         """One call from a question to the facts and sentences that answer it, within budget."""
+        requested = str(scorer).strip().lower()
+        if requested not in ASK_SCORERS:           # a stray value must not pick a scorer by luck
+            requested = "auto"
         with self._lock:
             texts, keys, pos = self.sentence_index()
             ents = self.question_entities(question)
@@ -361,7 +365,7 @@ class GraphStore:
             # every retrieved fact boosts its own sentence, whether or not the line survives
             boost = {pos[(e["source"], e["sent_idx"])] for e in edges
                      if (e["source"], e["sent_idx"]) in pos}
-            scores, name = self._score_sentences(question, texts, keys, scorer, boost)
+            scores, name = self._score_sentences(question, texts, keys, requested, boost)
             if not ents and not any(s > 0 for s in scores):
                 return f"no material for '{question}'"
             head = f"entities: {', '.join(ents) or '(none)'} · scorer={name}"

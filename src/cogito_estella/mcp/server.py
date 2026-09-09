@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-from cogito_estella.mcp.store import GraphStore
+from cogito_estella.mcp.store import ASK_SCORERS, GraphStore
 from cogito_estella.mcp.weights import WeightsError, ensure_spacy_model, resolve
 
 INSTRUCTIONS = ("Knowledge-graph memory over documents. `ingest` a file, directory or text "
@@ -40,7 +40,11 @@ class Tools:
 
     def ask(self, question: str, budget: int = 600, scorer: str = "auto") -> str:
         budget = min(max(int(budget), ASK_BUDGET_MIN), ASK_BUDGET_MAX)
-        return self._charge("ask", self.store.ask(question, budget, scorer))
+        name = str(scorer).strip().lower()         # a miscased value must not flip the scorer
+        if name not in ASK_SCORERS:
+            return self._charge("ask", f"unknown scorer {str(scorer).strip()[:24]!r}; "
+                                       f"use one of: {', '.join(ASK_SCORERS)}")
+        return self._charge("ask", self.store.ask(question, budget, name))
 
     def ingest(self, path_or_text: str, source: str = "") -> str:
         if not path_or_text.strip():

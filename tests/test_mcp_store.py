@@ -352,6 +352,10 @@ def test_ask_scorer_sonar_falls_back_with_a_note(ask_store):
         "entities: encoder, text · scorer=lexical (sonar unavailable)")
 
 
+def test_ask_treats_an_unknown_scorer_as_auto(emb_store):
+    assert "· scorer=sonar" in emb_store().ask(Q, scorer="SONAR-v2")
+
+
 def test_ask_falls_back_to_lexical_when_the_question_cannot_be_encoded(emb_store):
     st = emb_store()
 

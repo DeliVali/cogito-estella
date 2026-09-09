@@ -92,6 +92,19 @@ def test_ask_passes_the_scorer_through(tools):
     assert "scorer=lexical" in tools.ask("sonar decoder", scorer="lexical")
 
 
+def test_ask_normalizes_the_scorer_case_and_padding(tools):
+    tools.ingest(DOC)
+    out = tools.ask("sonar decoder", scorer="  Lexical ")
+    assert "scorer=lexical" in out and "sonar unavailable" not in out
+
+
+def test_ask_rejects_an_unknown_scorer_instead_of_guessing(tools):
+    tools.ingest(DOC)
+    out = tools.ask("sonar decoder", scorer="lexicl")
+    assert out == "unknown scorer 'lexicl'; use one of: auto, lexical, sonar"
+    assert tools.store.ledger.calls["ask"] == 1
+
+
 def test_instructions_route_every_question_to_ask():
     assert "Start every question with `ask`" in INSTRUCTIONS
     assert "go deeper" in INSTRUCTIONS and "class-only" in INSTRUCTIONS

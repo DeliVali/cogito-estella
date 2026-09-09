@@ -129,6 +129,7 @@ def canary_cosines(enc: TextEncoder) -> list[float]:
 
 
 def write_canary(enc: TextEncoder, cosines: list[float]) -> None:
+    """Re-baseline the tracked reference; callers must gate it behind an explicit opt-in."""
     data = load_canary() if CANARY_PATH.exists() else {}
     data["pairs"] = [list(p) for p in CANARY_PAIRS]
     data["tolerance"] = CANARY_TOLERANCE

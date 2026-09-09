@@ -244,6 +244,13 @@ def test_ask_ignores_generic_question_words(fake_extractor):
     assert st.ask("Which models does the paper use?").startswith("entities: (none) ·")
 
 
+def test_question_entities_resolve_es_and_ies_plurals(fake_extractor):
+    st = GraphStore(extractor=fake_extractor({}))
+    st.adj.update({"policy": [0], "patch": [1], "class": [2]})
+    assert st.question_entities("Which policies split the patches into classes?") == [
+        "policy", "patch", "class"]
+
+
 def test_ask_caps_the_facts_block_at_forty_percent_of_budget(ask_store):
     budget = 40
     out = ask_store.ask(Q, budget=budget)

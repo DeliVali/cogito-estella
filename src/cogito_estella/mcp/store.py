@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cogito_estella.mcp.rank import LexicalScorer, SonarScorer, rank
+from cogito_estella.mcp.rank import LexicalScorer, SonarScorer, rank, singular_forms
 from cogito_estella.mcp.tokens import Ledger, ntok
 
 BATCH = 64
@@ -268,8 +268,9 @@ class GraphStore:
         for raw in _QWORD.findall(question.lower()):
             if raw in ASK_STOPLIST:
                 continue
-            cand = raw if raw in self.adj else raw[:-1] if raw.endswith("s") else None
-            if cand is None or cand in ASK_STOPLIST or cand in out or cand not in self.adj:
+            # -es/-ies plurals too: `ask` must not be weaker than `query.resolve` here
+            cand = next((c for c in singular_forms(raw) if c in self.adj), None)
+            if cand is None or cand in ASK_STOPLIST or cand in out:
                 continue
             out.append(cand)
         out.sort(key=lambda e: len(self.adj[e]))     # stable: ties keep question order

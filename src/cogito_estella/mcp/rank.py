@@ -10,6 +10,7 @@ import numpy as np
 
 PROVENANCE_BONUS = 0.3
 MIN_SINGULAR = 3        # strip a trailing plural `s` only above this length
+_ES_PLURAL = ("ches", "shes", "sses", "xes", "zes")
 
 _FUNCTION_WORDS = """
 a about above after again against all also am among an and any are as at be because been
@@ -25,13 +26,39 @@ STOPWORDS = frozenset(_FUNCTION_WORDS.split())
 _WORD = re.compile(r"[a-z0-9][a-z0-9\-]*")
 
 
+def singular(word: str) -> str:
+    """One canonical singular form: questions and sentences must agree on it,
+    so -es/-ies plurals cannot resolve to a different token than their singular."""
+    if len(word) <= MIN_SINGULAR or not word.endswith("s"):
+        return word
+    if word.endswith("ies") and len(word) > MIN_SINGULAR + 1:
+        return word[:-3] + "y"
+    if word.endswith(_ES_PLURAL):
+        return word[:-2]
+    if word.endswith("ss"):        # loss, class: not a plural
+        return word
+    return word[:-1]
+
+
+def singular_forms(word: str) -> list[str]:
+    """Lookup keys for an exact-match dictionary, most likely first: the word,
+    its canonical singular, and the two blind strips as a last resort."""
+    out = [word]
+    if len(word) <= MIN_SINGULAR or not word.endswith("s") or word.endswith("ss"):
+        return out
+    for cand in (singular(word), word[:-1], word[:-2] if word.endswith("es") else ""):
+        if len(cand) > 1 and cand not in out:
+            out.append(cand)
+    return out
+
+
 def tokenize(text: str) -> list[str]:
     """Lowercase content words, singularized; function words dropped."""
     out: list[str] = []
     for raw in _WORD.findall(text.lower()):
         if raw in STOPWORDS:
             continue
-        tok = raw[:-1] if len(raw) > MIN_SINGULAR and raw.endswith("s") else raw
+        tok = singular(raw)
         if tok in STOPWORDS:
             continue
         out.append(tok)

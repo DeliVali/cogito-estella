@@ -10,6 +10,8 @@ from cogito_estella.mcp.rank import (
     LexicalScorer,
     SonarScorer,
     rank,
+    singular,
+    singular_forms,
     tokenize,
 )
 
@@ -33,6 +35,27 @@ def test_tokenize_drops_function_words():
 
 def test_tokenize_strips_one_trailing_s_only_above_three_chars():
     assert tokenize("gas layers") == ["gas", "layer"]
+
+
+def test_tokenize_singularizes_es_and_ies_plurals():
+    assert tokenize("patches boxes losses policies") == ["patch", "box", "loss", "policy"]
+
+
+def test_tokenize_never_strips_a_double_s():
+    assert tokenize("loss class") == ["loss", "class"]
+
+
+def test_tokenize_maps_a_plural_question_onto_its_singular_sentence():
+    assert set(tokenize("How many patches?")) & set(tokenize("Each patch is a byte group.")) \
+        == {"patch"}
+
+
+def test_singular_forms_offer_the_blind_strips_after_the_canonical_one():
+    assert singular_forms("patches") == ["patches", "patch", "patche"]
+    assert singular_forms("layers") == ["layers", "layer"]
+    assert singular_forms("gas") == ["gas"]
+    assert singular_forms("class") == ["class"]
+    assert singular("series") == "sery"          # documented cost of a purely syntactic rule
 
 
 def test_tokenize_ignores_punctuation_and_keeps_duplicates():

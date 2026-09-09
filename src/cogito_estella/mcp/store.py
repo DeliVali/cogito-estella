@@ -25,6 +25,9 @@ DIVIDER = "~ class-only, verify with provenance:"
 FACT_SHARE = 0.4                # of `ask`'s budget; the sentences take the rest
 ASK_ENTITIES = 3                # entities resolved from one question
 ASK_MAX_SKIPS = 32              # consecutive oversize sentences before the fill stops
+SONAR_COS_FLOOR = 0.2           # below this cosine a sentence is not about the question
+SONAR_FLOOR = (SONAR_COS_FLOOR + 1.0) / 2.0        # the same floor on the scorer's [0, 1] scale
+SONAR_OFFSET = 1.0              # embedded rows rank above lexical ones: no shared origin
 # question words too generic to be worth a graph hop
 _GENERIC = ("model models paper use uses used result results work approach method "
             "methods data table figure")
@@ -365,8 +368,15 @@ class GraphStore:
             sents = self._sentence_lines(texts, keys, scores, body, budget)
             return "\n".join(body + (["--"] + sents if sents else []))
 
+    def _embedded_note(self) -> str:
+        """`(n/m docs)` when only part of the corpus is embedded: a mixed ranking must say so."""
+        embedded = sum(1 for src in self.docs if src in self.emb)
+        return "" if embedded >= len(self.docs) else f" ({embedded}/{len(self.docs)} docs)"
+
     def _score_sentences(self, question, texts, keys, requested, boost):
-        """(scores, scorer name): SONAR where embeddings exist, lexical for the rest."""
+        """(scores, scorer name). SONAR ranks the embedded sentences, the lexical ones rank
+        strictly after them: (cos + 1) / 2 floors near 0.5 while an overlap-free sentence
+        scores 0, so the two scales must never be compared row by row."""
         lexical = LexicalScorer(texts).score(question, boost)
         note = "lexical (sonar unavailable)" if requested == "sonar" else "lexical"
         if requested == "lexical" or not texts:
@@ -382,7 +392,13 @@ class GraphStore:
             print(f"cogito-mcp: question encoding failed ({exc}); ask ranks lexically",
                   file=sys.stderr)
             return lexical, note
-        return [sonar[i] if mask[i] else lexical[i] for i in range(len(texts))], "sonar"
+        out = []
+        for i in range(len(texts)):
+            if not mask[i]:
+                out.append(lexical[i])
+            else:                                  # the floor keeps `no material` reachable
+                out.append(SONAR_OFFSET + sonar[i] if sonar[i] >= SONAR_FLOOR else 0.0)
+        return out, f"sonar{self._embedded_note()}"
 
     @staticmethod
     def _fit(block: list, lines: list, cap: int) -> list:

@@ -196,6 +196,21 @@ def unit_vectors(texts, dim=8):
     return np.asarray(rows, dtype=np.float16)
 
 
+def keyed_vectors(dim=4, keys=("alpha", "beta", "gamma", "delta")):
+    """One-hot per keyword: exact control over cosine, unlike a bag of words."""
+    def encode(texts, lang="eng_Latn"):
+        rows = []
+        for t in texts:
+            v = np.zeros(dim, dtype=np.float32)
+            for i, k in enumerate(keys):
+                if k in t.lower():
+                    v[i] = 1.0
+            n = float(np.linalg.norm(v))
+            rows.append(v / n if n else v)
+        return np.asarray(rows, dtype=np.float16)
+    return encode
+
+
 @pytest.fixture
 def ask_store(fake_extractor):
     st = GraphStore(extractor=fake_extractor(ASK_TRIPLES))
@@ -300,6 +315,32 @@ def test_ask_uses_sonar_when_embeddings_are_present(emb_store):
     assert "· scorer=sonar" in lines[0]
     first = lines[lines.index("--") + 1]
     assert first == 't s1: "The decoder maps text to a vector."'
+
+
+def test_ask_header_names_sonar_alone_when_every_document_is_embedded(emb_store):
+    assert emb_store().ask(Q).split("\n")[0].endswith("scorer=sonar")
+
+
+def test_ask_keeps_a_lexical_hit_above_unrelated_embedded_sentences(fake_extractor):
+    ex = fake_extractor(ASK_TRIPLES)
+    ex.encode_batch = keyed_vectors()
+    st = GraphStore(extractor=ex)
+    st.ingest_text("The gamma route is unrelated. The delta route is unrelated too.", "embedded")
+    st.ingest_text("The encoder maps text to a vector.", "plain")
+    st.emb.pop("plain")                        # e.g. a sidecar block rejected at load
+    lines = st.ask("alpha: to a vector?").split("\n")
+    assert lines[0].endswith("scorer=sonar (1/2 docs)")     # the mix is visible
+    assert lines[lines.index("--") + 1].startswith("plain s0:")
+
+
+def test_ask_abstains_when_no_embedded_sentence_clears_the_cosine_floor(fake_extractor):
+    ex = fake_extractor({})
+    ex.encode_batch = keyed_vectors()
+    st = GraphStore(extractor=ex)
+    st.ingest_text("The gamma route is unrelated.", "embedded")
+    assert st.emb["embedded"].shape[0] == 1
+    assert st.ask("which route?") == "no material for 'which route?'"   # lexical would serve it
+    assert "route" in st.ask("which route?", scorer="lexical")
 
 
 def test_ask_scorer_lexical_ignores_the_embeddings(emb_store):

@@ -16,6 +16,7 @@ import math
 import re
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from cogito_estella.model.candidate_decoder import (
@@ -23,6 +24,9 @@ from cogito_estella.model.candidate_decoder import (
     CandidateGraphDecoder,
     decode_triples_coo,
 )
+
+_ENC_BATCH = 64
+_SONAR_DIM = 1024
 
 _CYPHER = (
     "MERGE (a:Entity {name: $s}) "
@@ -251,6 +255,18 @@ class CogitoGraphExtractor:
                 encoder="text_sonar_basic_encoder", tokenizer="text_sonar_basic_encoder",
                 device=torch.device(self.device))
         return self._pipe.predict(texts, source_lang=lang).to(self.device)
+
+    def encode_batch(self, texts: list, lang: str = "eng_Latn"):
+        """Sentence embeddings for retrieval: [N, 1024] float16, L2-normalized, in order."""
+        rows = []
+        for i in range(0, len(texts), _ENC_BATCH):
+            emb = self._encode(texts[i:i + _ENC_BATCH], lang)
+            rows.append(emb.detach().to(torch.float32).cpu().numpy())
+        if not rows:
+            return np.zeros((0, _SONAR_DIM), dtype=np.float16)
+        mat = np.concatenate(rows, axis=0)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        return (mat / np.maximum(norms, 1e-12)).astype(np.float16)
 
     def _scanner(self):
         # spaCy scan (NOUN/PROPN lemmas) when available — matches the recall-1.0

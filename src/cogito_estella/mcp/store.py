@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from collections import defaultdict, deque
-from contextlib import redirect_stdout
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +35,36 @@ _GENERIC = ("model models paper use uses used result results work approach metho
             "methods data table figure")
 ASK_STOPLIST = frozenset(_GENERIC.split())
 _QWORD = re.compile(r"[a-z0-9][a-z0-9\-]*")
+
+
+class _StdoutWire:
+    """One reference-counted redirect of the process-global `sys.stdout`. Two plain
+    `redirect_stdout` blocks overlapping in different threads restore it out of order:
+    the wire returns while the other block still prints on it (corrupting the JSON-RPC
+    framing) and is then lost for the rest of the process. Here the first block in swaps
+    and the last one out restores, so blocks may overlap without ever nesting."""
+
+    def __init__(self):
+        self._lock = threading.Lock()      # held only across the swap, never across a load
+        self._depth = 0
+        self._wire = None
+
+    @contextmanager
+    def quiet(self):
+        with self._lock:
+            if not self._depth:
+                self._wire, sys.stdout = sys.stdout, sys.stderr
+            self._depth += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._depth -= 1
+                if not self._depth:
+                    sys.stdout, self._wire = self._wire, None
+
+
+_quiet = _StdoutWire().quiet               # every stdout redirect in this process goes here
 
 
 @dataclass
@@ -72,20 +102,29 @@ class GraphStore:
         self.ledger = Ledger()
         self.persisted_at: str | None = None
         self._lock = threading.RLock()     # sync tools run in worker threads: serialize mutation
+        self._ex_lock = threading.Lock()   # one extractor load per store, not one per caller
 
     @property
     def extractor(self):
         if self._ex is None:
-            if self._factory is None:
-                raise RuntimeError("GraphStore needs an extractor or an extractor_factory")
-            with redirect_stdout(sys.stderr):      # stdout is the MCP wire
-                self._ex = self._factory()
+            self._warm_extractor()
         return self._ex
+
+    def _warm_extractor(self) -> None:
+        """Materialize the extractor once: two concurrent first calls must not each load
+        the encoder. Off the store lock, so a load never serializes the other tools."""
+        with self._ex_lock:
+            if self._ex is None:
+                if self._factory is None:
+                    raise RuntimeError("GraphStore needs an extractor or an extractor_factory")
+                with _quiet():                     # stdout is the MCP wire
+                    self._ex = self._factory()
 
     # -- ingestion -----------------------------------------------------------
     def split(self, text: str) -> list[tuple[str, int]]:
         """(sentence, absolute char offset) pairs; regex fallback without spaCy."""
-        nlp = self.extractor._scanner()
+        with _quiet():                             # the first scan may load spaCy
+            nlp = self.extractor._scanner()
         sents = ([s.text.strip() for s in nlp(text).sents] if nlp
                  else [s.strip() for s in re.split(r"(?<=[.!?])\s+", text)])
         out, cursor = [], 0
@@ -114,7 +153,7 @@ class GraphStore:
             texts = [s for s, _ in sents]
             offsets = [o for _, o in sents]
             recs_per: list[list[dict]] = []
-            with redirect_stdout(sys.stderr):
+            with _quiet():
                 for i in range(0, len(texts), BATCH):
                     recs_per.extend(ex.extract_batch_with_provenance(
                         texts[i:i + BATCH], doc_offsets=offsets[i:i + BATCH]))
@@ -201,7 +240,7 @@ class GraphStore:
         if encode is None or not texts:
             return
         try:
-            with redirect_stdout(sys.stderr):      # stdout is the MCP wire
+            with _quiet():                         # stdout is the MCP wire
                 emb = np.asarray(encode(texts), dtype=np.float16)
         except Exception as exc:                   # noqa: BLE001 - encoder failure is a fallback
             if not self._emb_warned:               # one line per process, not per document
@@ -409,7 +448,7 @@ class GraphStore:
         if mat is None:
             return lexical, note
         try:
-            with redirect_stdout(sys.stderr):
+            with _quiet():
                 q = np.asarray(self.extractor.encode_batch([question]), dtype=np.float32)
                 sonar = SonarScorer(mat, lambda _texts: q).score(question, boost)
         except Exception as exc:                   # noqa: BLE001 - a missing encoder is a fallback

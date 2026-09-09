@@ -1,6 +1,8 @@
 """GraphStore ingestion, embeddings and the `ask` route: ids, dedup, replacement, ranking."""
+import io
 import json
 import re
+import sys
 import threading
 
 import numpy as np
@@ -559,6 +561,76 @@ def test_ask_releases_the_lock_before_encoding_the_question(fake_extractor):
     reader.join(5)
     writer.join(5)
     assert not blocked                             # a model load must not serialize the store
+
+
+def test_a_redirect_in_one_thread_never_hands_the_wire_to_another(fake_extractor, monkeypatch):
+    """Overlapping stdout redirects: the block still running must not print on the MCP
+    wire when the other one leaves, and the wire must come back at the end."""
+    marker = "encoder load noise"
+    reader_in, writer_in, reader_out = threading.Event(), threading.Event(), threading.Event()
+    ex = fake_extractor(ASK_TRIPLES)
+
+    def encode(texts, lang="eng_Latn"):
+        if list(texts) == [Q]:                     # inside `ask`'s redirect
+            reader_in.set()
+            writer_in.wait(5)
+        return unit_vectors(texts)
+
+    def extract(texts, doc_offsets=None, candidates=None, lang="eng_Latn"):
+        writer_in.set()                            # inside `ingest_text`'s redirect
+        reader_out.wait(5)
+        print(marker)
+        return [[] for _ in texts]
+
+    ex.encode_batch = encode
+    st = GraphStore(extractor=ex)
+    st.ingest_text(ASK_DOC, "t")
+    ex.extract_batch_with_provenance = extract
+
+    wire = io.StringIO()                           # stands in for the MCP stdio wire
+    monkeypatch.setattr(sys, "stdout", wire)
+    reader = threading.Thread(target=st.ask, args=(Q,))
+    reader.start()
+    assert reader_in.wait(5)
+    writer = threading.Thread(target=st.ingest_text, args=("The decoder is elsewhere.", "u"))
+    writer.start()
+    assert writer_in.wait(5)
+    reader.join(5)                                 # leaves while the writer is still inside
+    reader_out.set()
+    writer.join(5)
+    assert not reader.is_alive() and not writer.is_alive()
+    assert wire.getvalue() == ""                   # no load noise on the JSON-RPC framing
+    assert sys.stdout is wire                      # and the wire is back for the next reply
+
+
+def test_a_first_ask_from_two_threads_loads_the_extractor_once(tmp_path, fake_extractor):
+    path = tmp_path / "graph.json"
+    ex = fake_extractor(ASK_TRIPLES)
+    ex.encode_batch = lambda texts, lang="eng_Latn": unit_vectors(texts)
+    GraphStore(extractor=ex, path=path).ingest_text(ASK_DOC, "t")
+    calls, loading, release = [], threading.Event(), threading.Event()
+
+    def factory():
+        calls.append(1)
+        loading.set()
+        release.wait(5)
+        return ex
+
+    st = GraphStore(extractor_factory=factory, path=path)
+    st.load()
+    first = threading.Thread(target=st.ask, args=(Q,))
+    first.start()
+    assert loading.wait(5)
+    second = threading.Thread(target=st.ask, args=(Q,))
+    second.start()
+    for _ in range(100):                           # let a second factory call surface, if any
+        if len(calls) > 1:
+            break
+        second.join(0.01)
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert calls == [1]                            # one encoder load, not one per caller
 
 
 def test_ask_with_a_budget_too_small_for_any_line_still_names_what_it_found(ask_store):

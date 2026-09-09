@@ -1,0 +1,29 @@
+{
+  "bge-m3": {
+    "cosines": [
+      0.7135,
+      0.961
+    ],
+    "dim": 1024,
+    "revision": "5617a9f61b028005a4858fdac845db406aefb181"
+  },
+  "pairs": [
+    [
+      "The encoder maps text to a vector.",
+      "The decoder was trained on tokens."
+    ],
+    [
+      "SONAR decodes the concepts.",
+      "The concepts are decoded by SONAR."
+    ]
+  ],
+  "sonar": {
+    "cosines": [
+      0.4417,
+      0.7611
+    ],
+    "dim": 1024,
+    "revision": "text_sonar_basic_encoder"
+  },
+  "tolerance": 0.02
+}

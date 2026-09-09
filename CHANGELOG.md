@@ -6,7 +6,7 @@ Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemV
 
 ### Added
 - **`ask(question, budget=600, scorer="auto")`**: one call from a question to the material that answers it — the graph facts of the entities recognized in the question (exact hits, rarest first, 1 hop), then a `--` line, then the ranked source sentences, all within `budget` tokens (clamped to 100-4000; 40 % facts / 60 % sentences, line-granular truncation). Charged to the ledger like every other tool.
-- **Sentence scorers** (`cogito_estella.mcp.rank`): `LexicalScorer` (idf overlap normalized to [0, 1]) and `SonarScorer` (cosine mapped to [0, 1]), both with a provenance bonus for the sentences that back the retrieved facts.
+- **Sentence scorers** (`cogito_estella.mcp.rank`): `LexicalScorer` (idf overlap normalized to [0, 1]) and `SonarScorer` (cosine mapped to [0, 1]), both with a provenance bonus for the sentences that back the retrieved facts. The two scales are never merged row by row: embedded sentences rank above lexical ones and are dropped below a cosine floor, so `ask` can still answer `no material`; a partially embedded corpus is reported in the header as `scorer=sonar (3/5 docs)`. `scorer` is validated against `auto | lexical | sonar`.
 - **Sentence embeddings at ingest**: `CogitoGraphExtractor.encode_batch(texts)` (float16, L2-normalized) feeds a per-document embedding block stored in the sidecar `<graph>.emb.npz` (atomic write, tolerated when missing or unreadable); `stats` reports `embedded_docs=<n>/<docs>`. Documents ingested without an encoder are ranked lexically.
 
 ### Changed

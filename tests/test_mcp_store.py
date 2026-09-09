@@ -433,6 +433,57 @@ def test_sidecar_with_a_stale_sentence_count_is_ignored(tmp_path, fake_extractor
     assert back.emb == {}
 
 
+def test_sidecar_with_a_one_dimensional_matrix_is_rejected(tmp_path, fake_extractor, emb_store):
+    path = tmp_path / "graph.json"
+    st = emb_store(path)
+    sha = st.docs["t"]["sha256"]
+    with path.with_suffix(".emb.npz").open("wb") as fh:
+        np.savez(fh, sources=np.array(["t"]), counts=np.array([3]), shas=np.array([sha]),
+                 emb=np.zeros(3, dtype=np.float16))    # right row count, wrong rank
+    back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
+    back.load()
+    assert back.emb == {}
+    assert "· scorer=lexical" in back.ask(Q)           # no IndexError out of _embedding_matrix
+
+
+def test_sidecar_with_a_non_float_matrix_is_rejected(tmp_path, fake_extractor, emb_store):
+    path = tmp_path / "graph.json"
+    st = emb_store(path)
+    with path.with_suffix(".emb.npz").open("wb") as fh:
+        np.savez(fh, sources=np.array(["t"]), counts=np.array([3]),
+                 shas=np.array([st.docs["t"]["sha256"]]), emb=np.zeros((3, 8), dtype=np.int16))
+    back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
+    back.load()
+    assert back.emb == {}
+
+
+def test_save_survives_a_failing_sidecar_write(tmp_path, emb_store, monkeypatch):
+    path = tmp_path / "graph.json"
+    st = emb_store(path)
+
+    def boom(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(np, "savez", boom)
+    st.ingest_text("The encoder maps text to a byte.", "u")     # ingest -> save -> sidecar
+    assert json.loads(path.read_text(encoding="utf-8"))["docs"].keys() >= {"t", "u"}
+    assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_a_rejected_sidecar_is_kept_for_the_next_reader(tmp_path, fake_extractor, emb_store):
+    path = tmp_path / "graph.json"
+    st = emb_store(path)
+    side = path.with_suffix(".emb.npz")
+    with side.open("wb") as fh:                    # pre-0.15.0 layout: every block rejected
+        np.savez(fh, sources=np.array(["t"]), counts=np.array([3]), emb=st.emb["t"])
+    before = side.read_bytes()
+    back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
+    back.load()
+    assert back.emb == {} and set(back.docs) == {"t"}
+    back.save()
+    assert side.read_bytes() == before             # a save must not destroy what it cannot read
+
+
 def test_concurrent_ingests_keep_embeddings_aligned(tmp_path, fake_extractor):
     n = 4
     triples = {f"The encoder maps text to vector {i}.": [("encoder", "give", "text")]

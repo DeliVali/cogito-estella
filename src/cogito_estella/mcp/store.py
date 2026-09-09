@@ -67,6 +67,7 @@ class GraphStore:
         self.emb: dict[str, np.ndarray] = {}       # source -> [n_sents, D] float16, normalized
         self._sindex: tuple | None = None          # flat sentence universe, rebuilt on change
         self._emb_warned = False
+        self._emb_keep_warned = False
         self.ledger = Ledger()
         self.persisted_at: str | None = None
         self._lock = threading.RLock()     # sync tools run in worker threads: serialize mutation
@@ -501,7 +502,11 @@ class GraphStore:
                 f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
             tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, self.path)
-            self._save_embeddings()
+            try:
+                self._save_embeddings()
+            except (OSError, ValueError) as exc:   # the graph itself is already committed
+                print(f"cogito-mcp: embeddings sidecar not written ({exc}); "
+                      "ask ranks lexically after a reload", file=sys.stderr)
             self.persisted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
 
     def load(self) -> None:
@@ -549,17 +554,25 @@ class GraphStore:
         if p is None:
             return
         if not self.emb:
-            p.unlink(missing_ok=True)              # never leave a sidecar without a graph
+            if not self.docs:
+                p.unlink(missing_ok=True)          # never leave a sidecar without a graph
+            elif p.exists() and not self._emb_keep_warned:
+                self._emb_keep_warned = True       # a rejected load must not destroy the file
+                print(f"cogito-mcp: no embeddings in memory; {p} left untouched",
+                      file=sys.stderr)
             return
         sources = list(self.emb)
         tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        with tmp.open("wb") as fh:                 # a handle keeps savez from appending .npz
-            np.savez(fh, sources=np.array(sources),
-                     counts=np.array([self.emb[s].shape[0] for s in sources]),
-                     # content hash per block: a same-length replacement must not pass
-                     shas=np.array([self.docs.get(s, {}).get("sha256", "") for s in sources]),
-                     emb=np.concatenate([self.emb[s] for s in sources], axis=0))
-        os.replace(tmp, p)
+        try:
+            with tmp.open("wb") as fh:             # a handle keeps savez from appending .npz
+                np.savez(fh, sources=np.array(sources),
+                         counts=np.array([self.emb[s].shape[0] for s in sources]),
+                         # content hash per block: a same-length replacement must not pass
+                         shas=np.array([self.docs.get(s, {}).get("sha256", "") for s in sources]),
+                         emb=np.concatenate([self.emb[s] for s in sources], axis=0))
+            os.replace(tmp, p)
+        finally:
+            tmp.unlink(missing_ok=True)            # a failed write leaves no tmp behind
 
     def _load_embeddings(self) -> None:
         p = self._emb_path()
@@ -572,9 +585,9 @@ class GraphStore:
                 counts = [int(c) for c in z["counts"]]
                 shas = [str(s) for s in z["shas"]]      # absent in pre-0.15.0 sidecars: KeyError
                 emb = z["emb"]
-            if len(sources) != len(counts) or len(sources) != len(shas) \
-                    or sum(counts) != emb.shape[0]:
-                raise ValueError("sidecar counts do not match the matrix")
+            if emb.ndim != 2 or emb.dtype.kind != "f" or len(sources) != len(counts) \
+                    or len(sources) != len(shas) or sum(counts) != emb.shape[0]:
+                raise ValueError("sidecar matrix does not match its index")
             out, off = {}, 0
             for src, n, sha in zip(sources, counts, shas, strict=True):
                 block, off = emb[off:off + n], off + n
@@ -584,6 +597,6 @@ class GraphStore:
                 if doc.get("sha256") == sha and doc.get("sentences") == n:
                     out[src] = block
             self.emb = out
-        except (OSError, ValueError, KeyError, EOFError) as exc:
+        except (OSError, ValueError, KeyError, EOFError, IndexError) as exc:
             print(f"cogito-mcp: embeddings sidecar unusable ({exc}); ask ranks lexically",
                   file=sys.stderr)

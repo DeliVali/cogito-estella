@@ -1,4 +1,4 @@
-# Cogito Estella: Latent Graph Engine (v0.14.0)
+# Cogito Estella: Latent Graph Engine (v0.15.0)
 
 Non-autoregressive inference backend that decodes SONAR (Meta) semantic embeddings
 directly into knowledge graphs, bypassing token-based text decoding entirely.
@@ -115,8 +115,8 @@ Measured on consumer silicon (RTX 5070, 12 GB, CUDA 12.8), batch 1024:
 ## MCP Server (`cogito-mcp`)
 
 Give any MCP client a persistent knowledge-graph memory over your documents. Ingest once
-(zero LLM tokens: the local model does the extraction), then answer entity questions from
-the graph instead of reading files.
+(zero LLM tokens: the local model does the extraction), then answer questions from the
+graph and its sentences instead of reading files.
 
 ```bash
 pip install "cogito-estella[mcp]"          # add [pdf] for PDF input
@@ -129,14 +129,28 @@ Client configuration (Claude Code `.mcp.json`, Cursor, etc.):
 {"mcpServers": {"cogito": {"command": "cogito-mcp", "args": ["--dir", ".cogito"]}}}
 ```
 
-Tools: `ingest(path_or_text)` (file, directory of txt/md/html/pdf, or raw text; documents
+Tools: `ask(question, budget, scorer)` — the default route from a question to an answer —
+plus `ingest(path_or_text)` (file, directory of txt/md/html/pdf, or raw text; documents
 are deduplicated by content hash and replaced when they change), `query(entity, hops,
 limit)`, `provenance(edge_ids)`, `search(term)`, `entities(prefix)`, `stats()`.
 
-`query` prints facts as `subject relation object #edge_ids`. Facts whose relation was read
+`ask` returns the graph facts for the entities it recognizes in the question, then a `--`
+line, then the source sentences that answer it, ranked lexically or by SONAR cosine and
+capped at `budget` tokens (default 600, 40 % facts / 60 % sentences):
+
+```
+entities: blt, layer · scorer=sonar
+blt encode byte #12
+--
+2412.09871.txt s112: "We use SwiGLU activation in the feed-forward layers, as in Llama 3."
+```
+
+Use `query`, `provenance` and `search` to go deeper when one `ask` is not enough. `query`
+prints facts as `subject relation object #edge_ids`. Facts whose relation was read
 from the sentence's syntax come first; the line `~ class-only, verify with provenance:`
 introduces facts that only carry a coarse class label — check those with `provenance`
-before relying on them. The graph lives in `<dir>/graph.json` and survives restarts.
+before relying on them. The graph lives in `<dir>/graph.json` (sentence embeddings in
+`<dir>/graph.emb.npz`) and survives restarts.
 
 Weights: by default the ontology ensemble (`cogito-prose-ontology*.pt` + `vocab-onto.json`)
 is downloaded from Hugging Face on first run; pass `--checkpoint` (repeatable) and

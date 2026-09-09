@@ -2,6 +2,16 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.15.0] - 2026-09-09
+
+### Added
+- **`ask(question, budget=600, scorer="auto")`**: one call from a question to the material that answers it — the graph facts of the entities recognized in the question (exact hits, rarest first, 1 hop), then a `--` line, then the ranked source sentences, all within `budget` tokens (clamped to 100-4000; 40 % facts / 60 % sentences, line-granular truncation). Charged to the ledger like every other tool.
+- **Sentence scorers** (`cogito_estella.mcp.rank`): `LexicalScorer` (idf overlap normalized to [0, 1]) and `SonarScorer` (cosine mapped to [0, 1]), both with a provenance bonus for the sentences that back the retrieved facts.
+- **Sentence embeddings at ingest**: `CogitoGraphExtractor.encode_batch(texts)` (float16, L2-normalized) feeds a per-document embedding block stored in the sidecar `<graph>.emb.npz` (atomic write, tolerated when missing or unreadable); `stats` reports `embedded_docs=<n>/<docs>`. Documents ingested without an encoder are ranked lexically.
+
+### Changed
+- Server instructions make `ask` the routing gate: `query`, `provenance` and `search` are for going deeper.
+
 ## [0.14.0] - 2026-09-08
 
 ### Added

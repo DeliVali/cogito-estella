@@ -14,6 +14,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 
 DEFAULT_ENCODER = "sonar"
+LEGACY_ENCODER = "sonar"     # checkpoints predating the encoder key; never follows the default
 DIM = 1024
 CANARY_PATH = Path(__file__).with_name("canary.json")
 CANARY_TOLERANCE = 0.02

@@ -58,6 +58,24 @@ def _built(ck, vocab_file, enc, **meta):
 
 # --- checkpoint contract --------------------------------------------------------
 
+def test_a_checkpoint_without_metadata_is_a_raw_sonar_checkpoint(ck, vocab_file):
+    """The three shipped 0.15.0 checkpoints: no encoder/dim/normalize keys, no flag,
+    no env. Behaviour here must stay frozen when the process default flips."""
+    ex = CogitoGraphExtractor(ck(), vocab_file, device="cpu")
+    assert (ex.encoder_name, ex.dim, ex.head_normalize) == ("sonar", 1024, False)
+    assert ex._encoder is None
+
+
+def test_a_metadata_less_checkpoint_is_rejected_when_the_default_flips(ck, vocab_file,
+                                                                      monkeypatch):
+    """Legacy checkpoints are permanently SONAR-trained; the default is what this
+    process prefers. Conflating them would feed BGE-M3 vectors to SONAR heads."""
+    monkeypatch.setattr("cogito_estella.encoders.DEFAULT_ENCODER", "bge-m3")
+    with pytest.raises(EncoderMismatch) as exc:
+        CogitoGraphExtractor(ck(), vocab_file, device="cpu")
+    assert "sonar" in str(exc.value) and "bge-m3" in str(exc.value)
+
+
 def test_a_sonar_era_checkpoint_is_rejected_under_bge_m3(ck, vocab_file):
     """The dimension collision the contract exists for: 1024 == 1024, wrong space."""
     with pytest.raises(EncoderMismatch) as exc:

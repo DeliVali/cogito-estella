@@ -25,8 +25,8 @@ from cogito_estella.encoders import (
     CANARY_PAIRS,
     CANARY_PATH,
     CANARY_TOLERANCE,
-    DEFAULT_ENCODER,
     DIM,
+    LEGACY_ENCODER,
     EncoderMismatch,
     canary_cosines,
     get_encoder,
@@ -280,7 +280,7 @@ class CogitoGraphExtractor:
         encoder. Returns the shared `normalize` flag the heads were trained under."""
         norms = set()
         for path, ck in cks:
-            ck_enc = ck.get("encoder", DEFAULT_ENCODER)
+            ck_enc = ck.get("encoder", LEGACY_ENCODER)
             if ck_enc != self.encoder_name:
                 raise EncoderMismatch(f"checkpoint {path} was trained on {ck_enc}, "
                                       f"active encoder is {self.encoder_name}")

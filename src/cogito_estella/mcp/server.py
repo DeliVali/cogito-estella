@@ -1,5 +1,5 @@
-"""Cogito MCP server (stdio): ingest once, answer entity questions from the graph,
-verify with provenance. Every tool reply is charged to the token ledger."""
+"""Cogito MCP server (stdio): ingest once, route every question through `ask`,
+go deeper with query/provenance/search. Every tool reply is charged to the token ledger."""
 from __future__ import annotations
 
 import argparse
@@ -11,9 +11,12 @@ from cogito_estella.mcp.store import GraphStore
 from cogito_estella.mcp.weights import WeightsError, ensure_spacy_model, resolve
 
 INSTRUCTIONS = ("Knowledge-graph memory over documents. `ingest` a file, directory or text "
-                "once (zero LLM tokens), then answer entity questions with `query`; facts under "
-                "the '~ class-only' divider need `provenance` before you rely on them. "
-                "`search` is the text fallback when the graph has no fact.")
+                "once (zero LLM tokens). Start every question with `ask`: it returns the graph "
+                "facts and the sentences that answer it within a token budget. Use `query`, "
+                "`provenance` and `search` only to go deeper when `ask` is not enough; facts "
+                "under the '~ class-only' divider need `provenance` before you rely on them.")
+
+ASK_BUDGET_MIN, ASK_BUDGET_MAX = 100, 4000
 
 
 def _existing_path(value: str) -> Path | None:
@@ -34,6 +37,10 @@ class Tools:
     def _charge(self, tool: str, out: str) -> str:
         self.store.ledger.charge(tool, out)
         return out
+
+    def ask(self, question: str, budget: int = 600, scorer: str = "auto") -> str:
+        budget = min(max(int(budget), ASK_BUDGET_MIN), ASK_BUDGET_MAX)
+        return self._charge("ask", self.store.ask(question, budget, scorer))
 
     def ingest(self, path_or_text: str, source: str = "") -> str:
         if not path_or_text.strip():
@@ -75,6 +82,14 @@ def build_server(store: GraphStore):
     from mcp.server.mcpserver import MCPServer
     mcp = MCPServer("cogito", instructions=INSTRUCTIONS)
     t = Tools(store)
+
+    @mcp.tool()
+    def ask(question: str, budget: int = 600, scorer: str = "auto") -> str:
+        """Start here for any question: graph facts, then a '--' line, then the source
+        sentences that answer it, ranked. `budget` caps the reply in tokens (100-4000,
+        40 % facts / 60 % sentences); `scorer` is auto | lexical | sonar. Go deeper with
+        `query`, `provenance` and `search` only when this reply is not enough."""
+        return t.ask(question, budget, scorer)
 
     @mcp.tool()
     def ingest(path_or_text: str, source: str = "") -> str:

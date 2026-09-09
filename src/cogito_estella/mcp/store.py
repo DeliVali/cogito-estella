@@ -24,6 +24,7 @@ BATCH = 64
 DIVIDER = "~ class-only, verify with provenance:"
 FACT_SHARE = 0.4                # of `ask`'s budget; the sentences take the rest
 ASK_ENTITIES = 3                # entities resolved from one question
+ASK_MAX_SKIPS = 32              # consecutive oversize sentences before the fill stops
 # question words too generic to be worth a graph hop
 _GENERIC = ("model models paper use uses used result results work approach method "
             "methods data table figure")
@@ -405,6 +406,7 @@ class GraphStore:
     def _sentence_lines(self, texts, keys, scores, body, budget) -> list:
         out: list[str] = []
         seen: set[str] = set()
+        skips = 0
         for i in rank(scores):
             if scores[i] <= 0:
                 break
@@ -413,7 +415,11 @@ class GraphStore:
             src, si = keys[i]
             line = f'{src} s{si}: "{texts[i]}"'
             if ntok("\n".join(body + ["--", *out, line])) > budget:
-                break
+                skips += 1                         # oversize line: shorter ones may still fit
+                if skips >= ASK_MAX_SKIPS:
+                    break
+                continue
+            skips = 0
             seen.add(texts[i])
             out.append(line)
         return out
@@ -508,6 +514,8 @@ class GraphStore:
         with tmp.open("wb") as fh:                 # a handle keeps savez from appending .npz
             np.savez(fh, sources=np.array(sources),
                      counts=np.array([self.emb[s].shape[0] for s in sources]),
+                     # content hash per block: a same-length replacement must not pass
+                     shas=np.array([self.docs.get(s, {}).get("sha256", "") for s in sources]),
                      emb=np.concatenate([self.emb[s] for s in sources], axis=0))
         os.replace(tmp, p)
 
@@ -520,13 +528,18 @@ class GraphStore:
             with np.load(p, allow_pickle=False) as z:
                 sources = [str(s) for s in z["sources"]]
                 counts = [int(c) for c in z["counts"]]
+                shas = [str(s) for s in z["shas"]]      # absent in pre-0.15.0 sidecars: KeyError
                 emb = z["emb"]
-            if len(sources) != len(counts) or sum(counts) != emb.shape[0]:
+            if len(sources) != len(counts) or len(sources) != len(shas) \
+                    or sum(counts) != emb.shape[0]:
                 raise ValueError("sidecar counts do not match the matrix")
             out, off = {}, 0
-            for src, n in zip(sources, counts, strict=True):
+            for src, n, sha in zip(sources, counts, shas, strict=True):
                 block, off = emb[off:off + n], off + n
-                if self.docs.get(src, {}).get("sentences") == n:   # stale block: lexical is safer
+                doc = self.docs.get(src, {})
+                # the hash pins the block to the exact text it was encoded from;
+                # the count is a cheap redundancy. Any disagreement: lexical is safer
+                if doc.get("sha256") == sha and doc.get("sentences") == n:
                     out[src] = block
             self.emb = out
         except (OSError, ValueError, KeyError, EOFError) as exc:

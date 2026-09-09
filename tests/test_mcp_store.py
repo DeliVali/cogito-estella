@@ -401,3 +401,44 @@ def test_concurrent_ingests_keep_embeddings_aligned(tmp_path, fake_extractor):
 
 def test_ask_with_a_budget_too_small_for_any_line_still_names_what_it_found(ask_store):
     assert ask_store.ask(Q, budget=12) == "entities: encoder, text · scorer=lexical"
+
+
+def test_ask_skips_a_sentence_too_long_for_the_budget_and_serves_a_shorter_one(fake_extractor):
+    long_sent = "The encoder maps text to a vector " + "alpha beta gamma delta " * 160 + "end."
+    short_sent = "The encoder is fast."
+    st = GraphStore(extractor=fake_extractor({}))
+    st.ingest_text(f"{long_sent} {short_sent}", "t")
+    assert ntok(long_sent) > 600
+    out = st.ask("encoder vector", budget=600)
+    assert "--" in out
+    assert f'{short_sent}"' in out
+    assert "alpha beta" not in out
+    assert ntok(out) <= 600
+
+
+def test_sidecar_without_hashes_is_ignored(tmp_path, fake_extractor, emb_store):
+    path = tmp_path / "graph.json"
+    st = emb_store(path)
+    with path.with_suffix(".emb.npz").open("wb") as fh:      # pre-0.15.0 layout
+        np.savez(fh, sources=np.array(["t"]), counts=np.array([3]), emb=st.emb["t"])
+    back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
+    back.load()
+    assert back.emb == {}
+    assert len(back.edges) == 3
+
+
+def test_sidecar_is_dropped_when_the_document_text_changed_under_it(
+        tmp_path, fake_extractor, emb_store, monkeypatch):
+    path = tmp_path / "graph.json"
+    st = emb_store(path)
+    other = ("The decoder writes text into a vector. "
+             "The encoder reads text from a vector. "
+             "Because the budget shrank, the committee met late.")
+    monkeypatch.setattr(st, "_save_embeddings", lambda: None)   # interrupted sidecar write
+    st.ingest_text(other, "t")
+    assert st.docs["t"]["sentences"] == 3                       # same count, different text
+
+    back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
+    back.load()
+    assert back.emb == {}
+    assert "· scorer=lexical" in back.ask(Q)

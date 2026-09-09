@@ -25,6 +25,7 @@ DIVIDER = "~ class-only, verify with provenance:"
 FACT_SHARE = 0.4                # of `ask`'s budget; the sentences take the rest
 ASK_ENTITIES = 3                # entities resolved from one question
 ASK_MAX_SKIPS = 32              # consecutive oversize sentences before the fill stops
+ASK_MAX_IDS = 8                 # ids per fact line in `ask`: one hub group must not eat the cap
 SONAR_COS_FLOOR = 0.2           # below this cosine a sentence is not about the question
 SONAR_FLOOR = (SONAR_COS_FLOOR + 1.0) / 2.0        # the same floor on the scorer's [0, 1] scale
 SONAR_OFFSET = 1.0              # embedded rows rank above lexical ones: no shared origin
@@ -402,20 +403,40 @@ class GraphStore:
 
     @staticmethod
     def _fit(block: list, lines: list, cap: int) -> list:
-        """Lines that keep the joined block within `cap` tokens; truncation is line-granular."""
+        """Lines that keep the joined block within `cap` tokens; truncation is line-granular.
+        An oversize line is skipped, not a stop: one grouped fact line must not delete the
+        shorter ones behind it (the same rule `_sentence_lines` follows)."""
         out: list[str] = []
+        skips = 0
         for line in lines:
             if ntok("\n".join(block + out + [line])) > cap:
-                break
+                skips += 1
+                if skips >= ASK_MAX_SKIPS:
+                    break
+                continue
+            skips = 0
             out.append(line)
         return out
+
+    @staticmethod
+    def _cap_ids(line: str) -> str:
+        """Trim a grouped fact line's `#id` list; the ellipsis holds no digit that a
+        `provenance` call could read back as an edge id."""
+        head, sep, ids = line.rpartition(" #")
+        parts = ids.split(",")
+        if not sep or len(parts) <= ASK_MAX_IDS:
+            return line
+        return f"{head} #{','.join(parts[:ASK_MAX_IDS])} …"
+
+    def _ask_edge_lines(self, edges: list) -> list:
+        return [self._cap_ids(x) for x in self.render_edges(edges).split("\n")] if edges else []
 
     def _fact_lines(self, edges: list, head: str, cap: int) -> list:
         lex = [e for e in edges if e["r_lex"]]
         cls = [e for e in edges if not e["r_lex"]]
-        out = self._fit([head], self.render_edges(lex).split("\n") if lex else [], cap)
+        out = self._fit([head], self._ask_edge_lines(lex), cap)
         if cls:
-            tail = self._fit([head, *out, DIVIDER], self.render_edges(cls).split("\n"), cap)
+            tail = self._fit([head, *out, DIVIDER], self._ask_edge_lines(cls), cap)
             if tail:                               # a divider with nothing under it is noise
                 out += [DIVIDER, *tail]
         return out

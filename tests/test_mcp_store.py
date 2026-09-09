@@ -447,6 +447,25 @@ def test_concurrent_ingests_keep_embeddings_aligned(tmp_path, fake_extractor):
     assert all(st.emb[s].shape[0] == st.docs[s]["sentences"] for s in st.docs)
 
 
+def test_fit_skips_an_oversize_line_and_keeps_the_shorter_ones_behind_it():
+    lines = ["hub relate node #" + ",".join(str(i) for i in range(400)), "a b c #1", "d e f #2"]
+    assert GraphStore._fit(["head"], lines, 40) == ["a b c #1", "d e f #2"]
+
+
+def test_fit_stops_after_a_run_of_oversize_lines():
+    lines = ["x " * 300] * 40 + ["a b c #1"]
+    assert GraphStore._fit(["head"], lines, 40) == []
+
+
+def test_ask_caps_the_id_list_of_one_grouped_fact_line(fake_extractor):
+    sents = [f"The encoder maps text to a vector number {i}." for i in range(12)]
+    st = GraphStore(extractor=fake_extractor({t: [("encoder", "give", "text")] for t in sents}))
+    st.ingest_text(" ".join(sents), "t")
+    line = next(x for x in st.ask("encoder", budget=4000).split("\n") if x.startswith("encoder "))
+    assert line.endswith(" …") and line.count(",") == 7
+    assert "11" not in line                       # the ellipsis carries no readable edge id
+
+
 def test_ask_with_a_budget_too_small_for_any_line_still_names_what_it_found(ask_store):
     assert ask_store.ask(Q, budget=12) == "entities: encoder, text · scorer=lexical"
 

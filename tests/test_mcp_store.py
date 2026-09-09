@@ -1,10 +1,13 @@
-"""GraphStore ingestion: stable ids, dedup by hash, replacement, adjacency."""
+"""GraphStore ingestion, embeddings and the `ask` route: ids, dedup, replacement, ranking."""
 import json
+import re
 import threading
 
+import numpy as np
 import pytest
 
-from cogito_estella.mcp.store import GraphStore
+from cogito_estella.mcp.store import DIVIDER, GraphStore
+from cogito_estella.mcp.tokens import ntok
 
 DOC = ("The generated concepts are decoded by SONAR. "
        "The encoder maps text to a vector. "
@@ -166,3 +169,235 @@ def test_ingest_path_nested_directory_sorted_order(tmp_path, fake_extractor):
     assert len(lines) == 2
     assert lines[0].startswith("source=a.txt")
     assert lines[1].startswith("source=sub/b.md")
+
+
+# -- ask: hybrid graph -> sentence retrieval -------------------------------------
+
+ASK_DOC = ("The encoder maps text to a vector. "
+           "The decoder maps text to a vector. "
+           "Because the budget grew, the committee met early.")
+ASK_TRIPLES = {
+    "The encoder maps text to a vector.": [("encoder", "give", "text")],
+    "The decoder maps text to a vector.": [("decoder", "give", "text")],
+    "Because the budget grew, the committee met early.": [("budget", "do", "committee")],
+}
+Q = "What does the encoder do with text?"
+
+
+def unit_vectors(texts, dim=8):
+    """Deterministic normalized bag-of-words vectors: a stand-in for the SONAR encoder."""
+    rows = []
+    for t in texts:
+        v = np.zeros(dim, dtype=np.float32)
+        for w in re.findall(r"[a-z]+", t.lower()):
+            v[sum(map(ord, w)) % dim] += 1.0
+        n = float(np.linalg.norm(v))
+        rows.append(v / n if n else v)
+    return np.asarray(rows, dtype=np.float16)
+
+
+@pytest.fixture
+def ask_store(fake_extractor):
+    st = GraphStore(extractor=fake_extractor(ASK_TRIPLES))
+    st.ingest_text(ASK_DOC, "t")
+    return st
+
+
+@pytest.fixture
+def emb_store(fake_extractor):
+    def make(path=None):
+        ex = fake_extractor(ASK_TRIPLES)
+        ex.encode_batch = lambda texts, lang="eng_Latn": unit_vectors(texts)
+        st = GraphStore(extractor=ex, path=path)
+        st.ingest_text(ASK_DOC, "t")
+        return st
+    return make
+
+
+def test_ask_layout_is_header_facts_divider_then_sentences(ask_store):
+    lines = ask_store.ask(Q).split("\n")
+    assert lines[0] == "entities: encoder, text · scorer=lexical"
+    assert lines[1] == "encoder map text #0"
+    assert lines[2] == DIVIDER
+    assert lines[3] == "decoder give text #1"
+    assert lines[4] == "--"
+    assert lines[5] == 't s0: "The encoder maps text to a vector."'
+    assert all(x.startswith("t s") for x in lines[5:])
+    assert not any("committee" in x for x in lines[5:])   # zero lexical overlap, not served
+
+
+def test_ask_orders_entities_by_ascending_degree(ask_store):
+    assert len(ask_store.adj["text"]) > len(ask_store.adj["encoder"])
+    assert ask_store.ask("text encoder").startswith("entities: encoder, text ")
+
+
+def test_ask_keeps_at_most_three_entities(ask_store):
+    head = ask_store.ask("encoder decoder budget committee text").split("\n")[0]
+    assert head.startswith("entities: encoder, decoder, budget ·")
+
+
+def test_ask_ignores_generic_question_words(fake_extractor):
+    st = GraphStore(extractor=fake_extractor(
+        {"The model maps text to a vector.": [("model", "give", "text")]}))
+    st.ingest_text("The model maps text to a vector.", "t")
+    assert "model" in st.adj
+    assert st.ask("Which models does the paper use?").startswith("entities: (none) ·")
+
+
+def test_ask_caps_the_facts_block_at_forty_percent_of_budget(ask_store):
+    budget = 40
+    out = ask_store.ask(Q, budget=budget)
+    facts = out.split("\n--\n")[0]
+    assert ntok(facts) <= int(budget * 0.4)
+    assert "--" in out                                    # sentences still get their share
+
+
+def test_ask_never_exceeds_the_budget(ask_store):
+    for budget in (20, 40, 80, 200, 600):
+        assert ntok(ask_store.ask(Q, budget=budget)) <= budget
+
+
+def test_ask_without_entities_returns_sentences_only(ask_store):
+    lines = ask_store.ask("What happened early?").split("\n")
+    assert lines[0] == "entities: (none) · scorer=lexical"
+    assert lines[1] == "--"
+    assert DIVIDER not in lines
+    assert 'committee met early' in lines[2]
+
+
+def test_ask_reports_no_material_when_nothing_matches(ask_store):
+    assert ask_store.ask("quantum chromodynamics") == "no material for 'quantum chromodynamics'"
+
+
+def test_ask_on_an_empty_graph(fake_extractor):
+    assert GraphStore(extractor=fake_extractor({})).ask("anything") == "no material for 'anything'"
+
+
+# -- sentence embeddings --------------------------------------------------------------
+
+def test_ingest_without_an_encoder_stores_no_embeddings(ask_store):
+    assert ask_store.emb == {}
+    assert "embedded_docs=0/1" in ask_store.stats()
+
+
+def test_ingest_stores_normalized_float16_embeddings(emb_store):
+    st = emb_store()
+    assert set(st.emb) == {"t"}
+    assert st.emb["t"].shape == (3, 8) and st.emb["t"].dtype == np.float16
+    assert "embedded_docs=1/1" in st.stats()
+
+
+def test_ask_uses_sonar_when_embeddings_are_present(emb_store):
+    st = emb_store()
+    lines = st.ask("The decoder maps text to a vector.").split("\n")
+    assert "· scorer=sonar" in lines[0]
+    first = lines[lines.index("--") + 1]
+    assert first == 't s1: "The decoder maps text to a vector."'
+
+
+def test_ask_scorer_lexical_ignores_the_embeddings(emb_store):
+    assert "· scorer=lexical" in emb_store().ask(Q, scorer="lexical").split("\n")[0]
+
+
+def test_ask_scorer_sonar_falls_back_with_a_note(ask_store):
+    assert ask_store.ask(Q, scorer="sonar").startswith(
+        "entities: encoder, text · scorer=lexical (sonar unavailable)")
+
+
+def test_ask_falls_back_to_lexical_when_the_question_cannot_be_encoded(emb_store):
+    st = emb_store()
+
+    def boom(texts, lang="eng_Latn"):
+        raise RuntimeError("no weights")
+
+    st._ex.encode_batch = boom
+    assert "· scorer=lexical (sonar unavailable)" in st.ask(Q, scorer="sonar")
+
+
+def test_ingest_tolerates_an_encoder_that_raises(fake_extractor):
+    ex = fake_extractor(ASK_TRIPLES)
+
+    def boom(texts, lang="eng_Latn"):
+        raise RuntimeError("cuda is busy")
+
+    ex.encode_batch = boom
+    st = GraphStore(extractor=ex)
+    assert st.ingest_text(ASK_DOC, "t").triples == 3
+    assert st.emb == {}
+
+
+def test_embeddings_survive_save_and_load(tmp_path, fake_extractor, emb_store):
+    path = tmp_path / ".cogito" / "graph.json"
+    st = emb_store(path)
+    side = path.with_suffix(".emb.npz")
+    assert side.exists()
+    assert list(path.parent.glob("*.tmp")) == []
+
+    back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
+    back.load()
+    assert set(back.emb) == {"t"}
+    assert back.emb["t"].dtype == np.float16
+    assert np.array_equal(back.emb["t"], st.emb["t"])
+
+
+def test_drop_source_drops_its_embeddings_and_the_sidecar(tmp_path, emb_store):
+    path = tmp_path / "graph.json"
+    st = emb_store(path)
+    st.drop_source("t")
+    st.save()
+    assert st.emb == {}
+    assert not path.with_suffix(".emb.npz").exists()
+
+
+def test_missing_sidecar_leaves_the_store_lexical(tmp_path, fake_extractor, emb_store):
+    path = tmp_path / "graph.json"
+    emb_store(path)
+    path.with_suffix(".emb.npz").unlink()
+    back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
+    back.load()
+    assert back.emb == {}
+    assert "· scorer=lexical" in back.ask(Q)
+
+
+def test_corrupt_sidecar_is_tolerated(tmp_path, fake_extractor, emb_store):
+    path = tmp_path / "graph.json"
+    emb_store(path)
+    path.with_suffix(".emb.npz").write_bytes(b"not an npz file")
+    back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
+    back.load()
+    assert back.emb == {}
+    assert len(back.edges) == 3
+
+
+def test_sidecar_with_a_stale_sentence_count_is_ignored(tmp_path, fake_extractor, emb_store):
+    path = tmp_path / "graph.json"
+    emb_store(path)
+    side = path.with_suffix(".emb.npz")
+    with side.open("wb") as fh:
+        np.savez(fh, sources=np.array(["t"]), counts=np.array([2]),
+                 emb=np.zeros((2, 8), dtype=np.float16))
+    back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
+    back.load()
+    assert back.emb == {}
+
+
+def test_concurrent_ingests_keep_embeddings_aligned(tmp_path, fake_extractor):
+    n = 4
+    triples = {f"The encoder maps text to vector {i}.": [("encoder", "give", "text")]
+               for i in range(n)}
+    ex = fake_extractor(triples)
+    ex.encode_batch = lambda texts, lang="eng_Latn": unit_vectors(texts)
+    st = GraphStore(extractor=ex, path=tmp_path / "graph.json")
+    threads = [threading.Thread(target=st.ingest_text,
+                                args=(f"The encoder maps text to vector {i}.", f"src{i}"))
+               for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(st.emb) == n
+    assert all(st.emb[s].shape[0] == st.docs[s]["sentences"] for s in st.docs)
+
+
+def test_ask_with_a_budget_too_small_for_any_line_still_names_what_it_found(ask_store):
+    assert ask_store.ask(Q, budget=12) == "entities: encoder, text · scorer=lexical"

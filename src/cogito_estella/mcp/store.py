@@ -15,10 +15,20 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
+
+from cogito_estella.mcp.rank import LexicalScorer, SonarScorer, rank
 from cogito_estella.mcp.tokens import Ledger, ntok
 
 BATCH = 64
 DIVIDER = "~ class-only, verify with provenance:"
+FACT_SHARE = 0.4                # of `ask`'s budget; the sentences take the rest
+ASK_ENTITIES = 3                # entities resolved from one question
+# question words too generic to be worth a graph hop
+_GENERIC = ("model models paper use uses used result results work approach method "
+            "methods data table figure")
+ASK_STOPLIST = frozenset(_GENERIC.split())
+_QWORD = re.compile(r"[a-z0-9][a-z0-9\-]*")
 
 
 @dataclass
@@ -48,6 +58,9 @@ class GraphStore:
         self.next_id = 0
         self.adj: dict[str, list[int]] = defaultdict(list)
         self.docs: dict[str, dict] = {}
+        self.emb: dict[str, np.ndarray] = {}       # source -> [n_sents, D] float16, normalized
+        self._sindex: tuple | None = None          # flat sentence universe, rebuilt on change
+        self._emb_warned = False
         self.ledger = Ledger()
         self.persisted_at: str | None = None
         self._lock = threading.RLock()     # sync tools run in worker threads: serialize mutation
@@ -107,6 +120,8 @@ class GraphStore:
             raw = ntok(text)
             self.docs[source] = {"sha256": digest, "tokens": raw, "sentences": len(sents),
                                  "sents": sents}
+            self._embed_source(ex, source, texts)
+            self._sindex = None
             self._sync_raw_tokens()
             graph_tok = ntok(self.render_edges(
                 [e for e in self.edges.values() if e["source"] == source]))
@@ -148,6 +163,8 @@ class GraphStore:
             for i in gone:
                 del self.edges[i]
             self.docs.pop(source, None)
+            self.emb.pop(source, None)
+            self._sindex = None
             self._rebuild_adj()
             self._sync_raw_tokens()
             return len(gone)
@@ -169,6 +186,52 @@ class GraphStore:
         """raw_tokens is derived from the currently stored documents, never accumulated:
         a replaced document must not double-count its old and new token totals."""
         self.ledger.raw_tokens = sum(d["tokens"] for d in self.docs.values())
+
+    def _embed_source(self, ex, source: str, texts: list[str]) -> None:
+        """Sentence embeddings when the extractor can encode; absence means lexical ranking."""
+        encode = getattr(ex, "encode_batch", None)
+        if encode is None or not texts:
+            return
+        try:
+            with redirect_stdout(sys.stderr):      # stdout is the MCP wire
+                emb = np.asarray(encode(texts), dtype=np.float16)
+        except Exception as exc:                   # noqa: BLE001 - encoder failure is a fallback
+            if not self._emb_warned:               # one line per process, not per document
+                self._emb_warned = True
+                print(f"cogito-mcp: sentence embeddings unavailable ({exc}); "
+                      "ask ranks lexically", file=sys.stderr)
+            return
+        if emb.ndim == 2 and emb.shape[0] == len(texts):
+            self.emb[source] = emb
+
+    def sentence_index(self) -> tuple[list, list, dict]:
+        """Flat sentence universe: texts, their (source, sent_idx) keys, and the reverse map."""
+        with self._lock:
+            if self._sindex is None:
+                texts: list[str] = []
+                keys: list[tuple[str, int]] = []
+                pos: dict[tuple[str, int], int] = {}
+                for src, d in self.docs.items():
+                    for i, (s, _) in enumerate(d["sents"]):
+                        pos[(src, i)] = len(texts)
+                        keys.append((src, i))
+                        texts.append(s)
+                self._sindex = (texts, keys, pos)
+            return self._sindex
+
+    def _embedding_matrix(self, keys: list):
+        """(matrix aligned with the sentence universe, mask of embedded rows) or (None, None)."""
+        if not self.emb:
+            return None, None
+        dim = next(iter(self.emb.values())).shape[1]
+        mat = np.zeros((len(keys), dim), dtype=np.float16)
+        mask = [False] * len(keys)
+        for i, (src, si) in enumerate(keys):
+            block = self.emb.get(src)
+            if block is not None and si < block.shape[0] and block.shape[1] == dim:
+                mat[i] = block[si]
+                mask[i] = True
+        return (mat, mask) if any(mask) else (None, None)
 
     def sentence_of(self, edge: dict) -> str:
         return self.docs[edge["source"]]["sents"][edge["sent_idx"]][0]
@@ -197,6 +260,19 @@ class GraphStore:
         if not cands and q.endswith("s"):
             return self.resolve(q[:-1])
         return max(cands, key=lambda e: len(self.adj[e])) if cands else None
+
+    def question_entities(self, question: str, k: int = ASK_ENTITIES) -> list[str]:
+        """Exact entity hits in a question, rarest first; no prefix or substring guessing."""
+        out: list[str] = []
+        for raw in _QWORD.findall(question.lower()):
+            if raw in ASK_STOPLIST:
+                continue
+            cand = raw if raw in self.adj else raw[:-1] if raw.endswith("s") else None
+            if cand is None or cand in ASK_STOPLIST or cand in out or cand not in self.adj:
+                continue
+            out.append(cand)
+        out.sort(key=lambda e: len(self.adj[e]))     # stable: ties keep question order
+        return out[:k]
 
     def neighborhood(self, entity: str, hops: int = 1) -> list[dict]:
         seen_e, seen_edges, out = {entity}, set(), []
@@ -265,6 +341,83 @@ class GraphStore:
         ents = self.top_entities(limit, prefix)
         return ", ".join(f"{e}({len(self.adj[e])})" for e in ents) or "(empty graph)"
 
+    def ask(self, question: str, budget: int = 600, scorer: str = "auto") -> str:
+        """One call from a question to the facts and sentences that answer it, within budget."""
+        with self._lock:
+            texts, keys, pos = self.sentence_index()
+            ents = self.question_entities(question)
+            edges, seen = [], set()
+            for ent in ents:
+                for e in self.neighborhood(ent, 1):
+                    if e["id"] not in seen:
+                        seen.add(e["id"])
+                        edges.append(e)
+            # every retrieved fact boosts its own sentence, whether or not the line survives
+            boost = {pos[(e["source"], e["sent_idx"])] for e in edges
+                     if (e["source"], e["sent_idx"]) in pos}
+            scores, name = self._score_sentences(question, texts, keys, scorer, boost)
+            if not ents and not any(s > 0 for s in scores):
+                return f"no material for '{question}'"
+            head = f"entities: {', '.join(ents) or '(none)'} · scorer={name}"
+            body = [head, *self._fact_lines(edges, head, int(budget * FACT_SHARE))]
+            sents = self._sentence_lines(texts, keys, scores, body, budget)
+            return "\n".join(body + (["--"] + sents if sents else []))
+
+    def _score_sentences(self, question, texts, keys, requested, boost):
+        """(scores, scorer name): SONAR where embeddings exist, lexical for the rest."""
+        lexical = LexicalScorer(texts).score(question, boost)
+        note = "lexical (sonar unavailable)" if requested == "sonar" else "lexical"
+        if requested == "lexical" or not texts:
+            return lexical, "lexical"
+        mat, mask = self._embedding_matrix(keys)
+        if mat is None:
+            return lexical, note
+        try:
+            with redirect_stdout(sys.stderr):
+                q = np.asarray(self.extractor.encode_batch([question]), dtype=np.float32)
+                sonar = SonarScorer(mat, lambda _texts: q).score(question, boost)
+        except Exception as exc:                   # noqa: BLE001 - a missing encoder is a fallback
+            print(f"cogito-mcp: question encoding failed ({exc}); ask ranks lexically",
+                  file=sys.stderr)
+            return lexical, note
+        return [sonar[i] if mask[i] else lexical[i] for i in range(len(texts))], "sonar"
+
+    @staticmethod
+    def _fit(block: list, lines: list, cap: int) -> list:
+        """Lines that keep the joined block within `cap` tokens; truncation is line-granular."""
+        out: list[str] = []
+        for line in lines:
+            if ntok("\n".join(block + out + [line])) > cap:
+                break
+            out.append(line)
+        return out
+
+    def _fact_lines(self, edges: list, head: str, cap: int) -> list:
+        lex = [e for e in edges if e["r_lex"]]
+        cls = [e for e in edges if not e["r_lex"]]
+        out = self._fit([head], self.render_edges(lex).split("\n") if lex else [], cap)
+        if cls:
+            tail = self._fit([head, *out, DIVIDER], self.render_edges(cls).split("\n"), cap)
+            if tail:                               # a divider with nothing under it is noise
+                out += [DIVIDER, *tail]
+        return out
+
+    def _sentence_lines(self, texts, keys, scores, body, budget) -> list:
+        out: list[str] = []
+        seen: set[str] = set()
+        for i in rank(scores):
+            if scores[i] <= 0:
+                break
+            if texts[i] in seen:
+                continue
+            src, si = keys[i]
+            line = f'{src} s{si}: "{texts[i]}"'
+            if ntok("\n".join(body + ["--", *out, line])) > budget:
+                break
+            seen.add(texts[i])
+            out.append(line)
+        return out
+
     def stats(self) -> str:
         L = self.ledger
         full = ntok(self.render_edges(list(self.edges.values()))) if self.edges else 0
@@ -276,7 +429,8 @@ class GraphStore:
             else "graph_file=none"
         return "\n".join([
             (f"docs={len(self.docs)} sentences={sum(d['sentences'] for d in self.docs.values())} "
-             f"edges={len(self.edges)} lexical={lex} entities={len(self.adj)}"),
+             f"edges={len(self.edges)} lexical={lex} entities={len(self.adj)} "
+             f"embedded_docs={len(self.emb)}/{len(self.docs)}"),
             f"raw_tokens_ingested={L.raw_tokens}  (what Read-ing every doc costs)",
             f"full_graph_tokens={full}  (compression {L.raw_tokens / max(full, 1):.1f}x)",
             f"tokens_served_to_agent={L.served} over {calls} calls: {by}",
@@ -299,6 +453,7 @@ class GraphStore:
                 f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
             tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, self.path)
+            self._save_embeddings()
             self.persisted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
 
     def load(self) -> None:
@@ -331,6 +486,49 @@ class GraphStore:
             # only commit once every section parsed cleanly: never half-load
             self.edges, self.docs, self.adj = edges, docs, adj
             self.next_id = max(next_id, max(edges, default=-1) + 1)
+            self._sindex = None
+            self._load_embeddings()
             self._sync_raw_tokens()
             self.persisted_at = datetime.fromtimestamp(
                 self.path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
+
+    # -- embedding sidecar (<graph>.emb.npz) -----------------------------------------
+    def _emb_path(self) -> Path | None:
+        return self.path.with_suffix(".emb.npz") if self.path else None
+
+    def _save_embeddings(self) -> None:
+        p = self._emb_path()
+        if p is None:
+            return
+        if not self.emb:
+            p.unlink(missing_ok=True)              # never leave a sidecar without a graph
+            return
+        sources = list(self.emb)
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        with tmp.open("wb") as fh:                 # a handle keeps savez from appending .npz
+            np.savez(fh, sources=np.array(sources),
+                     counts=np.array([self.emb[s].shape[0] for s in sources]),
+                     emb=np.concatenate([self.emb[s] for s in sources], axis=0))
+        os.replace(tmp, p)
+
+    def _load_embeddings(self) -> None:
+        p = self._emb_path()
+        self.emb = {}
+        if p is None or not p.exists():
+            return
+        try:
+            with np.load(p, allow_pickle=False) as z:
+                sources = [str(s) for s in z["sources"]]
+                counts = [int(c) for c in z["counts"]]
+                emb = z["emb"]
+            if len(sources) != len(counts) or sum(counts) != emb.shape[0]:
+                raise ValueError("sidecar counts do not match the matrix")
+            out, off = {}, 0
+            for src, n in zip(sources, counts, strict=True):
+                block, off = emb[off:off + n], off + n
+                if self.docs.get(src, {}).get("sentences") == n:   # stale block: lexical is safer
+                    out[src] = block
+            self.emb = out
+        except (OSError, ValueError, KeyError, EOFError) as exc:
+            print(f"cogito-mcp: embeddings sidecar unusable ({exc}); ask ranks lexically",
+                  file=sys.stderr)

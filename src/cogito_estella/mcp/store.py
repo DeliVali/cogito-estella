@@ -66,6 +66,7 @@ class GraphStore:
         self.docs: dict[str, dict] = {}
         self.emb: dict[str, np.ndarray] = {}       # source -> [n_sents, D] float16, normalized
         self._sindex: tuple | None = None          # flat sentence universe, rebuilt on change
+        self._lex: LexicalScorer | None = None     # IDF over that universe, rebuilt with it
         self._emb_warned = False
         self._emb_keep_warned = False
         self.ledger = Ledger()
@@ -128,7 +129,7 @@ class GraphStore:
             self.docs[source] = {"sha256": digest, "tokens": raw, "sentences": len(sents),
                                  "sents": sents}
             self._embed_source(ex, source, texts)
-            self._sindex = None
+            self._invalidate_index()
             self._sync_raw_tokens()
             graph_tok = ntok(self.render_edges(
                 [e for e in self.edges.values() if e["source"] == source]))
@@ -171,7 +172,7 @@ class GraphStore:
                 del self.edges[i]
             self.docs.pop(source, None)
             self.emb.pop(source, None)
-            self._sindex = None
+            self._invalidate_index()
             self._rebuild_adj()
             self._sync_raw_tokens()
             return len(gone)
@@ -210,6 +211,18 @@ class GraphStore:
             return
         if emb.ndim == 2 and emb.shape[0] == len(texts):
             self.emb[source] = emb
+
+    def _invalidate_index(self) -> None:
+        """The sentence universe changed: flat index and IDF scorer are both stale."""
+        self._sindex = None
+        self._lex = None
+
+    def _lexical_scorer(self) -> LexicalScorer:
+        """IDF over the whole universe: built once per corpus, not once per question."""
+        with self._lock:
+            if self._lex is None:
+                self._lex = LexicalScorer(self.sentence_index()[0])
+            return self._lex
 
     def sentence_index(self) -> tuple[list, list, dict]:
         """Flat sentence universe: texts, their (source, sent_idx) keys, and the reverse map."""
@@ -354,8 +367,11 @@ class GraphStore:
         requested = str(scorer).strip().lower()
         if requested not in ASK_SCORERS:           # a stray value must not pick a scorer by luck
             requested = "auto"
+        # snapshot under the lock, then score outside it: one model load must not
+        # serialize every other reader and writer behind this call
         with self._lock:
             texts, keys, pos = self.sentence_index()
+            lex = self._lexical_scorer()
             ents = self.question_entities(question)
             edges, seen = [], set()
             for ent in ents:
@@ -366,28 +382,30 @@ class GraphStore:
             # every retrieved fact boosts its own sentence, whether or not the line survives
             boost = {pos[(e["source"], e["sent_idx"])] for e in edges
                      if (e["source"], e["sent_idx"]) in pos}
-            scores, name = self._score_sentences(question, texts, keys, requested, boost)
-            if not ents and not any(s > 0 for s in scores):
-                return f"no material for '{question}'"
-            head = f"entities: {', '.join(ents) or '(none)'} · scorer={name}"
-            body = [head, *self._fact_lines(edges, head, int(budget * FACT_SHARE))]
-            sents = self._sentence_lines(texts, keys, scores, body, budget)
-            return "\n".join(body + (["--"] + sents if sents else []))
+            mat, mask = (None, None) if requested == "lexical" \
+                else self._embedding_matrix(keys)
+            cover = self._embedded_note()
+        scores, name = self._score_sentences(question, lex, mat, mask, cover, requested, boost)
+        if not ents and not any(s > 0 for s in scores):
+            return f"no material for '{question}'"
+        head = f"entities: {', '.join(ents) or '(none)'} · scorer={name}"
+        body = [head, *self._fact_lines(edges, head, int(budget * FACT_SHARE))]
+        sents = self._sentence_lines(texts, keys, scores, body, budget)
+        return "\n".join(body + (["--"] + sents if sents else []))
 
     def _embedded_note(self) -> str:
         """`(n/m docs)` when only part of the corpus is embedded: a mixed ranking must say so."""
         embedded = sum(1 for src in self.docs if src in self.emb)
         return "" if embedded >= len(self.docs) else f" ({embedded}/{len(self.docs)} docs)"
 
-    def _score_sentences(self, question, texts, keys, requested, boost):
+    def _score_sentences(self, question, lex, mat, mask, cover, requested, boost):
         """(scores, scorer name). SONAR ranks the embedded sentences, the lexical ones rank
         strictly after them: (cos + 1) / 2 floors near 0.5 while an overlap-free sentence
         scores 0, so the two scales must never be compared row by row."""
-        lexical = LexicalScorer(texts).score(question, boost)
+        lexical = lex.score(question, boost)
         note = "lexical (sonar unavailable)" if requested == "sonar" else "lexical"
-        if requested == "lexical" or not texts:
+        if requested == "lexical" or not lex.n:
             return lexical, "lexical"
-        mat, mask = self._embedding_matrix(keys)
         if mat is None:
             return lexical, note
         try:
@@ -399,12 +417,12 @@ class GraphStore:
                   file=sys.stderr)
             return lexical, note
         out = []
-        for i in range(len(texts)):
+        for i in range(lex.n):
             if not mask[i]:
                 out.append(lexical[i])
             else:                                  # the floor keeps `no material` reachable
                 out.append(SONAR_OFFSET + sonar[i] if sonar[i] >= SONAR_FLOOR else 0.0)
-        return out, f"sonar{self._embedded_note()}"
+        return out, f"sonar{cover}"
 
     @staticmethod
     def _fit(block: list, lines: list, cap: int) -> list:
@@ -539,7 +557,7 @@ class GraphStore:
             # only commit once every section parsed cleanly: never half-load
             self.edges, self.docs, self.adj = edges, docs, adj
             self.next_id = max(next_id, max(edges, default=-1) + 1)
-            self._sindex = None
+            self._invalidate_index()
             self._load_embeddings()
             self._sync_raw_tokens()
             self.persisted_at = datetime.fromtimestamp(

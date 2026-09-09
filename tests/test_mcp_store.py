@@ -521,6 +521,46 @@ def test_ask_caps_the_id_list_of_one_grouped_fact_line(fake_extractor):
     assert "11" not in line                       # the ellipsis carries no readable edge id
 
 
+def test_ask_builds_the_lexical_scorer_once_per_corpus(ask_store, monkeypatch):
+    import cogito_estella.mcp.store as store_mod
+    built = []
+    real = store_mod.LexicalScorer
+    monkeypatch.setattr(store_mod, "LexicalScorer",
+                        lambda sentences: built.append(len(sentences)) or real(sentences))
+    ask_store.ask(Q)
+    ask_store.ask("what about the committee?")
+    assert built == [3]                            # one IDF pass, not one per question
+    ask_store.ingest_text("The decoder is new here.", "u")
+    ask_store.ask(Q)
+    assert built == [3, 4]                         # a new document invalidates it
+
+
+def test_ask_releases_the_lock_before_encoding_the_question(fake_extractor):
+    ex = fake_extractor(ASK_TRIPLES)
+    encoding, resume = threading.Event(), threading.Event()
+
+    def slow_encode(texts, lang="eng_Latn"):
+        if list(texts) == [Q]:                     # the question, never a document
+            encoding.set()
+            resume.wait(5)
+        return unit_vectors(texts)
+
+    ex.encode_batch = slow_encode
+    st = GraphStore(extractor=ex)
+    st.ingest_text(ASK_DOC, "t")
+    reader = threading.Thread(target=st.ask, args=(Q,))
+    reader.start()
+    assert encoding.wait(5)
+    writer = threading.Thread(target=st.ingest_text, args=("The decoder is elsewhere.", "u"))
+    writer.start()
+    writer.join(5)
+    blocked = writer.is_alive()
+    resume.set()
+    reader.join(5)
+    writer.join(5)
+    assert not blocked                             # a model load must not serialize the store
+
+
 def test_ask_with_a_budget_too_small_for_any_line_still_names_what_it_found(ask_store):
     assert ask_store.ask(Q, budget=12) == "entities: encoder, text · scorer=lexical"
 

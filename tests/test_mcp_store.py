@@ -333,7 +333,7 @@ def test_ask_keeps_a_lexical_hit_above_unrelated_embedded_sentences(fake_extract
     st = GraphStore(extractor=ex)
     st.ingest_text("The gamma route is unrelated. The delta route is unrelated too.", "embedded")
     st.ingest_text("The encoder maps text to a vector.", "plain")
-    st.emb.pop("plain")                        # e.g. a sidecar block rejected at load
+    assert "plain" not in st.emb               # keyless: an all-zero row is not stored
     lines = st.ask("alpha: to a vector?", scorer="sonar").split("\n")
     assert lines[0].endswith("scorer=sonar (1/2 docs)")     # the mix is visible
     assert lines[lines.index("--") + 1].startswith("plain s0:")
@@ -681,3 +681,34 @@ def test_sidecar_is_dropped_when_the_document_text_changed_under_it(
     back.load()
     assert back.emb == {}
     assert "· scorer=lexical (sonar unavailable)" in back.ask(Q, scorer="sonar")
+
+
+# -- the store only stores embeddings it can rank with --------------------------------
+
+def test_store_rejects_embeddings_of_another_width(fake_extractor, capsys):
+    ex = fake_extractor(ASK_TRIPLES)
+    ex.dim = 8                                     # what the active encoder produces
+    ex.encode_batch = lambda texts, lang="eng_Latn": unit_vectors(texts, dim=4)
+    st = GraphStore(extractor=ex)
+    st.ingest_text(ASK_DOC, "t")
+    assert st.emb == {}
+    assert "rejected" in capsys.readouterr().err
+
+
+def test_store_rejects_a_row_off_the_unit_sphere_once_per_process(fake_extractor, capsys):
+    ex = fake_extractor(ASK_TRIPLES)
+    ex.encode_batch = lambda texts, lang="eng_Latn": (unit_vectors(texts) * 3).astype(np.float16)
+    st = GraphStore(extractor=ex)
+    st.ingest_text(ASK_DOC, "t")
+    st.ingest_text("The decoder is elsewhere.", "u")
+    assert st.emb == {}
+    assert capsys.readouterr().err.count("cogito-mcp: sentence embeddings rejected") == 1
+
+
+def test_store_keeps_embeddings_the_extractor_vouches_for(fake_extractor):
+    ex = fake_extractor(ASK_TRIPLES)
+    ex.dim = 8
+    ex.encode_batch = lambda texts, lang="eng_Latn": unit_vectors(texts)
+    st = GraphStore(extractor=ex)
+    st.ingest_text(ASK_DOC, "t")
+    assert st.emb["t"].shape == (3, 8)

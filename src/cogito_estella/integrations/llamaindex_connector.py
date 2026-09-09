@@ -9,16 +9,30 @@ Three lines to production:
 No hard dependency on either framework: `extract` takes plain text (what both hand
 you), returns `(subject, relation, object)` string triples. `to_neo4j` maps them to
 standard Cypher MERGE statements with per-edge provenance; the neo4j driver ships in
-the `[graph]` extra. SONAR (the `[sonar]` extra) is loaded lazily on first call.
+the `[graph]` extra. The text encoder named by the checkpoints is loaded lazily on
+first call.
 """
 import json
 import math
+import os
 import re
 from pathlib import Path
 
 import numpy as np
 import torch
 
+from cogito_estella.encoders import (
+    CANARY_PAIRS,
+    CANARY_PATH,
+    CANARY_TOLERANCE,
+    DEFAULT_ENCODER,
+    DIM,
+    EncoderMismatch,
+    canary_cosines,
+    get_encoder,
+    load_canary,
+    resolve_encoder_name,
+)
 from cogito_estella.model.candidate_decoder import (
     CandidateDecoderConfig,
     CandidateGraphDecoder,
@@ -26,7 +40,6 @@ from cogito_estella.model.candidate_decoder import (
 )
 
 _ENC_BATCH = 64
-_SONAR_DIM = 1024
 
 _CYPHER = (
     "MERGE (a:Entity {name: $s}) "
@@ -223,11 +236,17 @@ class CogitoGraphExtractor:
 
     def __init__(self, checkpoint, vocab_path: str, device: str | None = None,
                  threshold: float | None = None, adj_threshold: float | None = None,
-                 force_top1: bool = True):
+                 force_top1: bool = True, encoder=None, download: bool = True):
         """`checkpoint`: a single path, or a list of paths for prob-averaged ensemble
         decoding (the validated 0.827 recipe ships as 5 checkpoints). Defaults follow
         the validated operating points: single model (0.15, 0.15); ensemble (0.1, 0.8)
-        — precision-heavy edges with force-top1 as the recall floor."""
+        — precision-heavy edges with force-top1 as the recall floor.
+
+        `encoder`: a name, a TextEncoder instance, or None. 1024 is 1024 in both
+        semantic spaces, so a checkpoint decoded with the wrong encoder returns
+        plausible garbage: every checkpoint declares the encoder it was trained on and
+        a disagreement raises EncoderMismatch here rather than surfacing as bad
+        triples."""
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         vocab = json.loads(Path(vocab_path).read_text())
         self.ent2id = vocab["ent2id"]
@@ -238,35 +257,80 @@ class CogitoGraphExtractor:
                               else (0.8 if is_ens else 0.15))
         self.force_top1 = force_top1
         paths = [checkpoint] if isinstance(checkpoint, (str, Path)) else list(checkpoint)
+        cks = [(path, torch.load(path, map_location=self.device, weights_only=False))
+               for path in paths]
+        self._encoder = encoder if not isinstance(encoder, str) else None
+        self._download = download
+        explicit = encoder if isinstance(encoder, str) else (
+            encoder.name if encoder is not None else None)     # a nameless encoder is a defect
+        self.encoder_name = resolve_encoder_name(
+            explicit, [ck.get("encoder") for _, ck in cks], os.environ)
+        self.dim = DIM
+        self.head_normalize = self._check_checkpoints(cks)
         self.decs = []
-        for path in paths:
+        for _path, ck in cks:
             dec = CandidateGraphDecoder(
                 CandidateDecoderConfig(n_relations=len(self.rels))).to(self.device)
-            ck = torch.load(path, map_location=self.device, weights_only=False)
             dec.load_state_dict(ck["dec"])
             dec.eval()
             self.decs.append(dec)
-        self._pipe = None
 
-    def _encode(self, texts, lang):
-        if self._pipe is None:
-            from sonar.inference_pipelines.text import TextToEmbeddingModelPipeline
-            self._pipe = TextToEmbeddingModelPipeline(
-                encoder="text_sonar_basic_encoder", tokenizer="text_sonar_basic_encoder",
-                device=torch.device(self.device))
-        return self._pipe.predict(texts, source_lang=lang).to(self.device)
+    def _check_checkpoints(self, cks: list) -> bool:
+        """Encoder, width and normalization of every checkpoint against the active
+        encoder. Returns the shared `normalize` flag the heads were trained under."""
+        norms = set()
+        for path, ck in cks:
+            ck_enc = ck.get("encoder", DEFAULT_ENCODER)
+            if ck_enc != self.encoder_name:
+                raise EncoderMismatch(f"checkpoint {path} was trained on {ck_enc}, "
+                                      f"active encoder is {self.encoder_name}")
+            if ck.get("dim", DIM) != DIM:
+                raise EncoderMismatch(f"checkpoint {path} has dim {ck['dim']}, "
+                                      f"the encoder contract is {DIM}")
+            norms.add(bool(ck.get("normalize", False)))
+        if len(norms) > 1:
+            raise EncoderMismatch("checkpoints disagree on normalize: "
+                                  f"{sorted(norms)} across {len(cks)} checkpoints")
+        return norms.pop() if norms else False
+
+    @property
+    def encoder(self):
+        """Built on first use: constructing an extractor must not load model weights."""
+        if self._encoder is None:
+            self._encoder = get_encoder(self.encoder_name, self.device, self._download)
+        return self._encoder
+
+    def check_canary(self) -> None:
+        """Two fixed sentence pairs against the shipped reference cosines. Catches an
+        encoder that loaded but is not the one the checkpoints were trained on."""
+        ref = load_canary().get(self.encoder_name)
+        if ref is None or len(ref.get("cosines", [])) != len(CANARY_PAIRS):
+            raise EncoderMismatch(f"encoder canary has no usable reference for "
+                                  f"{self.encoder_name} in {CANARY_PATH}")
+        got = canary_cosines(self.encoder)
+        dev = max(abs(a - b) for a, b in zip(got, ref["cosines"]))
+        if dev > CANARY_TOLERANCE:
+            raise EncoderMismatch(
+                f"encoder canary failed for {self.encoder_name}: cosines "
+                f"{[round(c, 4) for c in got]} vs reference {ref['cosines']} "
+                f"(deviation {dev:.4f} > {CANARY_TOLERANCE})")
+
+    def _encode(self, texts, lang="eng_Latn"):
+        """Head input: the encoder's native contract unless the checkpoints say the
+        heads were trained on normalized vectors."""
+        mat = self.encoder.encode(texts, lang, batch_size=_ENC_BATCH,
+                                  normalize=self.head_normalize or None)
+        return torch.from_numpy(mat).to(self.device)
 
     def encode_batch(self, texts: list, lang: str = "eng_Latn"):
         """Sentence embeddings for retrieval: [N, 1024] float16, L2-normalized, in order."""
         rows = []
         for i in range(0, len(texts), _ENC_BATCH):
-            emb = self._encode(texts[i:i + _ENC_BATCH], lang)
-            rows.append(emb.detach().to(torch.float32).cpu().numpy())
+            rows.append(self.encoder.encode(texts[i:i + _ENC_BATCH], lang,
+                                            batch_size=_ENC_BATCH, normalize=True))
         if not rows:
-            return np.zeros((0, _SONAR_DIM), dtype=np.float16)
-        mat = np.concatenate(rows, axis=0)
-        norms = np.linalg.norm(mat, axis=1, keepdims=True)
-        return (mat / np.maximum(norms, 1e-12)).astype(np.float16)
+            return np.zeros((0, self.dim), dtype=np.float16)
+        return np.concatenate(rows, axis=0).astype(np.float16)
 
     def _scanner(self):
         # spaCy scan (NOUN/PROPN lemmas) when available — matches the recall-1.0

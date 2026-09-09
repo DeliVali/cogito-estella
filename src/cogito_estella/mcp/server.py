@@ -7,6 +7,7 @@ import re
 import sys
 from pathlib import Path
 
+from cogito_estella.encoders import ENCODERS, EncoderMismatch
 from cogito_estella.mcp.store import GraphStore
 from cogito_estella.mcp.weights import WeightsError, ensure_spacy_model, resolve
 
@@ -136,9 +137,25 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--checkpoint", action="append", help="decoder checkpoint (repeatable)")
     ap.add_argument("--vocab", help="vocabulary json matching the checkpoints")
     ap.add_argument("--device", default=None, help="cuda | cpu (default: auto)")
+    ap.add_argument("--encoder", choices=sorted(ENCODERS), default=None,
+                    help="text encoder (default: whatever the checkpoints were trained on)")
     ap.add_argument("--no-download", dest="download", action="store_false",
                     help="never download weights or the spaCy model")
     return ap.parse_args(argv)
+
+
+def build_extractor(ckpts, vocab, ns: argparse.Namespace):
+    """Extractor plus the startup canary. An encoder that disagrees with the
+    checkpoints stops the server instead of serving triples from the wrong space."""
+    from cogito_estella.integrations import llamaindex_connector as connector
+    try:
+        ex = connector.CogitoGraphExtractor([str(c) for c in ckpts], str(vocab),
+                                            device=ns.device, encoder=ns.encoder,
+                                            download=ns.download)
+        ex.check_canary()
+    except EncoderMismatch as exc:
+        sys.exit(f"cogito-mcp: {exc}")
+    return ex
 
 
 def _exit_missing_dependency(exc: ImportError) -> None:
@@ -156,11 +173,8 @@ def main(argv=None) -> None:
     except ImportError as exc:
         _exit_missing_dependency(exc)
 
-    def factory():
-        from cogito_estella.integrations.llamaindex_connector import CogitoGraphExtractor
-        return CogitoGraphExtractor([str(c) for c in ckpts], str(vocab), device=ns.device)
-
-    store = GraphStore(extractor_factory=factory, path=ns.dir / "graph.json")
+    store = GraphStore(extractor_factory=lambda: build_extractor(ckpts, vocab, ns),
+                       path=ns.dir / "graph.json")
     store.load()
     print(f"cogito-mcp: graph {store.path} edges={len(store.edges)} docs={len(store.docs)}",
           file=sys.stderr)

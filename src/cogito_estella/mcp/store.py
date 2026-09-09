@@ -248,8 +248,28 @@ class GraphStore:
                 print(f"cogito-mcp: sentence embeddings unavailable ({exc}); "
                       "ask ranks lexically", file=sys.stderr)
             return
-        if emb.ndim == 2 and emb.shape[0] == len(texts):
-            self.emb[source] = emb
+        defect = self._emb_defect(emb, len(texts), getattr(ex, "dim", None))
+        if defect:
+            if not self._emb_warned:               # one line per process, not per document
+                self._emb_warned = True
+                print(f"cogito-mcp: sentence embeddings rejected ({defect}); "
+                      "ask ranks lexically", file=sys.stderr)
+            return
+        self.emb[source] = emb
+
+    @staticmethod
+    def _emb_defect(emb: np.ndarray, n_texts: int, dim: int | None) -> str:
+        """Why `emb` cannot rank sentences, or "" when it can. Cosine ranking assumes
+        unit rows in the extractor's own space: an off-space or unnormalized block would
+        score silently wrong, so it is refused rather than stored."""
+        if emb.ndim != 2 or emb.shape[0] != n_texts:
+            return f"shape {tuple(emb.shape)} for {n_texts} sentences"
+        if dim is not None and emb.shape[1] != dim:
+            return f"width {emb.shape[1]}, the extractor encodes {dim}"
+        off = np.abs(np.linalg.norm(emb.astype(np.float32), axis=1) - 1.0)
+        if emb.shape[0] and float(off.max()) >= 0.01:
+            return f"a row is {float(off.max()):.3f} off the unit sphere"
+        return ""
 
     def _invalidate_index(self) -> None:
         """The sentence universe changed: flat index and IDF scorer are both stale."""

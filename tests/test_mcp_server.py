@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from cogito_estella.mcp.server import INSTRUCTIONS, Tools, build_server, parse_args
+from cogito_estella.mcp.server import (
+    INSTRUCTIONS,
+    Tools,
+    build_extractor,
+    build_server,
+    parse_args,
+)
 from cogito_estella.mcp.store import GraphStore
 
 DOC = "The generated concepts are decoded by SONAR. The encoder maps text to a vector."
@@ -110,7 +116,7 @@ def test_instructions_route_every_question_to_ask():
 def test_parse_args_defaults():
     ns = parse_args([])
     assert ns.dir == Path(".cogito") and ns.checkpoint is None and ns.vocab is None
-    assert ns.download is True and ns.device is None
+    assert ns.download is True and ns.device is None and ns.encoder is None
     ns = parse_args(["--dir", "x", "--checkpoint", "a.pt", "--checkpoint", "b.pt",
                      "--vocab", "v.json", "--no-download", "--device", "cpu"])
     assert ns.checkpoint == ["a.pt", "b.pt"] and ns.download is False and ns.device == "cpu"
@@ -217,3 +223,49 @@ def test_stdio_smoke_persists_across_restarts(tmp_path):
                               ("ask", {"question": "What does SONAR decode?"})]))
     assert "sonar decode concept" in second[0]
     assert second[1].startswith("entities: sonar") and "\n--\n" in second[1]
+
+
+# -- --encoder and the startup canary --------------------------------------------------
+
+def test_parse_args_accepts_an_encoder_choice():
+    assert parse_args([]).encoder is None
+    assert parse_args(["--encoder", "bge-m3"]).encoder == "bge-m3"
+    with pytest.raises(SystemExit):
+        parse_args(["--encoder", "sonar-v2"])
+
+
+class _StubExtractor:
+    def __init__(self, ckpts, vocab, device=None, encoder=None, download=True):
+        self.args = {"ckpts": ckpts, "vocab": vocab, "device": device,
+                     "encoder": encoder, "download": download}
+        self.canaries = 0
+
+    def check_canary(self):
+        self.canaries += 1
+
+
+def test_build_extractor_forwards_the_flags_and_runs_the_canary_once(monkeypatch):
+    import cogito_estella.integrations.llamaindex_connector as lc
+    monkeypatch.setattr(lc, "CogitoGraphExtractor", _StubExtractor)
+    ns = parse_args(["--encoder", "bge-m3", "--no-download", "--device", "cpu"])
+    ex = build_extractor([Path("a.pt")], Path("v.json"), ns)
+    assert ex.canaries == 1
+    assert ex.args == {"ckpts": ["a.pt"], "vocab": "v.json", "device": "cpu",
+                       "encoder": "bge-m3", "download": False}
+
+
+@pytest.mark.parametrize("where", ["init", "canary"])
+def test_build_extractor_stops_the_server_on_an_encoder_mismatch(monkeypatch, where):
+    import cogito_estella.integrations.llamaindex_connector as lc
+    from cogito_estella.encoders import EncoderMismatch
+
+    def boom(*_a, **_k):
+        raise EncoderMismatch("checkpoint a.pt was trained on sonar, active encoder is bge-m3")
+
+    class Failing(_StubExtractor):
+        check_canary = boom
+
+    monkeypatch.setattr(lc, "CogitoGraphExtractor", boom if where == "init" else Failing)
+    with pytest.raises(SystemExit) as exc:
+        build_extractor([Path("a.pt")], Path("v.json"), parse_args(["--encoder", "bge-m3"]))
+    assert "trained on sonar" in str(exc.value) and str(exc.value).startswith("cogito-mcp:")

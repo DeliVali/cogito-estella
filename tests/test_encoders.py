@@ -1,5 +1,4 @@
 """Encoder registry, precedence and contract. Real adapters run under -m integration."""
-import hashlib
 import json
 import os
 from types import SimpleNamespace
@@ -30,39 +29,6 @@ TEXTS = [
     "A graph stores entities and relations.",
     "Vectors are compared with cosine similarity.",
 ]
-
-
-class FakeEncoder:
-    """Deterministic unit-norm hash encoder; records the kwargs it was called with."""
-
-    name = "fake"
-    revision = "fake-1"
-    dim = 1024
-    native_normalized = True
-
-    def __init__(self):
-        self.calls = []
-
-    def encode(self, texts, lang="eng_Latn", batch_size=64, normalize=None):
-        self.calls.append({"lang": lang, "batch_size": batch_size, "normalize": normalize})
-        if not texts:
-            return np.zeros((0, self.dim), dtype=np.float32)
-        rows = []
-        for text in texts:
-            seed = int(hashlib.sha256(text.encode()).hexdigest()[:16], 16)
-            vec = np.random.default_rng(seed).standard_normal(self.dim).astype(np.float32)
-            rows.append(vec / np.linalg.norm(vec))
-        return np.stack(rows).astype(np.float32)
-
-
-class WrongDimEncoder(FakeEncoder):
-    def encode(self, texts, lang="eng_Latn", batch_size=64, normalize=None):
-        return super().encode(texts, lang, batch_size, normalize)[:, :512]
-
-
-class UnnormalizedEncoder(FakeEncoder):
-    def encode(self, texts, lang="eng_Latn", batch_size=64, normalize=None):
-        return super().encode(texts, lang, batch_size, normalize) * 3.0
 
 
 # --- registry -------------------------------------------------------------------
@@ -111,28 +77,28 @@ def test_default_when_nothing_is_specified():
 
 # --- contract checker -----------------------------------------------------------
 
-def test_check_contract_all_true_for_a_conforming_encoder():
-    report = check_contract(FakeEncoder(), TEXTS)
+def test_check_contract_all_true_for_a_conforming_encoder(fake_encoder):
+    report = check_contract(fake_encoder(), TEXTS)
     for key in ("dim", "dtype", "unit_norm", "deterministic", "batch_invariant"):
         assert report[key] is True, report
     assert report["max_norm_dev"] < 1e-3
 
 
-def test_check_contract_flags_a_wrong_width():
-    assert check_contract(WrongDimEncoder(), TEXTS)["dim"] is False
+def test_check_contract_flags_a_wrong_width(wrong_dim_encoder):
+    assert check_contract(wrong_dim_encoder(), TEXTS)["dim"] is False
 
 
-def test_check_contract_flags_a_non_unit_norm():
-    assert check_contract(UnnormalizedEncoder(), TEXTS)["unit_norm"] is False
+def test_check_contract_flags_a_non_unit_norm(unnormalized_encoder):
+    assert check_contract(unnormalized_encoder(), TEXTS)["unit_norm"] is False
 
 
-def test_check_contract_rejects_an_empty_text_list():
+def test_check_contract_rejects_an_empty_text_list(fake_encoder):
     with pytest.raises(ValueError):
-        check_contract(FakeEncoder(), [])
+        check_contract(fake_encoder(), [])
 
 
-def test_check_contract_forwards_batch_size_and_normalize():
-    enc = FakeEncoder()
+def test_check_contract_forwards_batch_size_and_normalize(fake_encoder):
+    enc = fake_encoder()
     check_contract(enc, TEXTS, batch_size=8)
     assert enc.calls[0] == {"lang": "eng_Latn", "batch_size": 8, "normalize": True}
 
@@ -248,12 +214,13 @@ def test_canary_file_is_shipped_and_covers_both_encoders():
     assert json.loads(CANARY_PATH.read_text(encoding="utf-8")) == data
 
 
-def test_write_canary_round_trips_without_touching_the_shipped_file(tmp_path, monkeypatch):
+def test_write_canary_round_trips_without_touching_the_shipped_file(tmp_path, monkeypatch,
+                                                                       fake_encoder):
     import cogito_estella.encoders as enc_mod
 
     target = tmp_path / "canary.json"
     monkeypatch.setattr(enc_mod, "CANARY_PATH", target)
-    enc_mod.write_canary(FakeEncoder(), [0.123456, -0.5])
+    enc_mod.write_canary(fake_encoder(), [0.123456, -0.5])
     data = json.loads(target.read_text(encoding="utf-8"))
     assert data["fake"] == {"revision": "fake-1", "dim": 1024, "cosines": [0.1235, -0.5]}
     assert data["tolerance"] == CANARY_TOLERANCE and data["pairs"] == [list(p) for p in CANARY_PAIRS]

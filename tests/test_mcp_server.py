@@ -82,27 +82,24 @@ def test_ask_clamps_the_budget(tools, monkeypatch):
     assert seen == [100, 4000, 600]
 
 
-def test_ask_sonar_without_embeddings_falls_back_with_a_note(tools):
+def test_ask_use_sonar_without_embeddings_falls_back_with_a_note(tools):
     tools.ingest(DOC)
-    assert "scorer=lexical (sonar unavailable)" in tools.ask("sonar decoder", scorer="sonar")
+    assert "scorer=lexical (sonar unavailable)" in tools.ask("sonar decoder", use_sonar=True)
 
 
-def test_ask_passes_the_scorer_through(tools):
+def test_ask_ranks_lexically_by_default(tools):
     tools.ingest(DOC)
-    assert "scorer=lexical" in tools.ask("sonar decoder", scorer="lexical")
-
-
-def test_ask_normalizes_the_scorer_case_and_padding(tools):
-    tools.ingest(DOC)
-    out = tools.ask("sonar decoder", scorer="  Lexical ")
+    out = tools.ask("sonar decoder")
     assert "scorer=lexical" in out and "sonar unavailable" not in out
 
 
-def test_ask_rejects_an_unknown_scorer_instead_of_guessing(tools):
-    tools.ingest(DOC)
-    out = tools.ask("sonar decoder", scorer="lexicl")
-    assert out == "unknown scorer 'lexicl'; use one of: auto, lexical, sonar"
-    assert tools.store.ledger.calls["ask"] == 1
+def test_ask_maps_the_toggle_to_the_store_scorer(tools, monkeypatch):
+    seen = []
+    monkeypatch.setattr(tools.store, "ask",
+                        lambda q, budget, scorer: seen.append(scorer) or "ok")
+    tools.ask("q")
+    tools.ask("q", use_sonar=True)
+    assert seen == ["lexical", "sonar"]
 
 
 def test_instructions_route_every_question_to_ask():

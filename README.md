@@ -129,17 +129,20 @@ Client configuration (Claude Code `.mcp.json`, Cursor, etc.):
 {"mcpServers": {"cogito": {"command": "cogito-mcp", "args": ["--dir", ".cogito"]}}}
 ```
 
-Tools: `ask(question, budget, scorer)` — the default route from a question to an answer —
+Tools: `ask(question, budget, use_sonar)` — the default route from a question to an answer —
 plus `ingest(path_or_text)` (file, directory of txt/md/html/pdf, or raw text; documents
 are deduplicated by content hash and replaced when they change), `query(entity, hops,
 limit)`, `provenance(edge_ids)`, `search(term)`, `entities(prefix)`, `stats()`.
 
 `ask` returns the graph facts for the entities it recognizes in the question, then a `--`
-line, then the source sentences that answer it, ranked lexically or by SONAR cosine and
-capped at `budget` tokens (default 600, 40 % facts / 60 % sentences):
+line, then the source sentences that answer it, capped at `budget` tokens (default 600,
+40 % facts / 60 % sentences). Lexical IDF is the primary ranking engine; `use_sonar=True`
+(off by default) ranks the sentence block by SONAR cosine instead, and falls back to
+lexical with a note when the graph carries no embeddings. The two scores are never
+merged:
 
 ```
-entities: blt, layer · scorer=sonar
+entities: blt, layer · scorer=lexical
 blt encode byte #12
 --
 2412.09871.txt s112: "We use SwiGLU activation in the feed-forward layers, as in Llama 3."

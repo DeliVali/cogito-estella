@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-from cogito_estella.mcp.store import ASK_SCORERS, GraphStore
+from cogito_estella.mcp.store import GraphStore
 from cogito_estella.mcp.weights import WeightsError, ensure_spacy_model, resolve
 
 INSTRUCTIONS = ("Knowledge-graph memory over documents. `ingest` a file, directory or text "
@@ -38,13 +38,10 @@ class Tools:
         self.store.ledger.charge(tool, out)
         return out
 
-    def ask(self, question: str, budget: int = 600, scorer: str = "auto") -> str:
+    def ask(self, question: str, budget: int = 600, use_sonar: bool = False) -> str:
         budget = min(max(int(budget), ASK_BUDGET_MIN), ASK_BUDGET_MAX)
-        name = str(scorer).strip().lower()         # a miscased value must not flip the scorer
-        if name not in ASK_SCORERS:
-            return self._charge("ask", f"unknown scorer {str(scorer).strip()[:24]!r}; "
-                                       f"use one of: {', '.join(ASK_SCORERS)}")
-        return self._charge("ask", self.store.ask(question, budget, name))
+        scorer = "sonar" if use_sonar else "lexical"
+        return self._charge("ask", self.store.ask(question, budget, scorer))
 
     def ingest(self, path_or_text: str, source: str = "") -> str:
         if not path_or_text.strip():
@@ -88,12 +85,14 @@ def build_server(store: GraphStore):
     t = Tools(store)
 
     @mcp.tool()
-    def ask(question: str, budget: int = 600, scorer: str = "auto") -> str:
+    def ask(question: str, budget: int = 600, use_sonar: bool = False) -> str:
         """Start here for any question: graph facts, then a '--' line, then the source
         sentences that answer it, ranked. `budget` caps the reply in tokens (100-4000,
-        40 % facts / 60 % sentences); `scorer` is auto | lexical | sonar. Go deeper with
-        `query`, `provenance` and `search` only when this reply is not enough."""
-        return t.ask(question, budget, scorer)
+        40 % facts / 60 % sentences). IDF ranking by default; use_sonar=True ranks the
+        sentence block with SONAR embeddings when the graph has them (falls back to
+        lexical with a note). Go deeper with `query`, `provenance` and `search` only
+        when this reply is not enough."""
+        return t.ask(question, budget, use_sonar)
 
     @mcp.tool()
     def ingest(path_or_text: str, source: str = "") -> str:

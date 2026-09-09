@@ -311,16 +311,20 @@ def test_ingest_stores_normalized_float16_embeddings(emb_store):
     assert "embedded_docs=1/1" in st.stats()
 
 
-def test_ask_uses_sonar_when_embeddings_are_present(emb_store):
+def test_ask_uses_sonar_when_asked_and_embeddings_are_present(emb_store):
     st = emb_store()
-    lines = st.ask("The decoder maps text to a vector.").split("\n")
+    lines = st.ask("The decoder maps text to a vector.", scorer="sonar").split("\n")
     assert "· scorer=sonar" in lines[0]
     first = lines[lines.index("--") + 1]
     assert first == 't s1: "The decoder maps text to a vector."'
 
 
 def test_ask_header_names_sonar_alone_when_every_document_is_embedded(emb_store):
-    assert emb_store().ask(Q).split("\n")[0].endswith("scorer=sonar")
+    assert emb_store().ask(Q, scorer="sonar").split("\n")[0].endswith("scorer=sonar")
+
+
+def test_ask_ranks_lexically_by_default_even_when_embeddings_exist(emb_store):
+    assert "· scorer=lexical" in emb_store().ask(Q).split("\n")[0]
 
 
 def test_ask_keeps_a_lexical_hit_above_unrelated_embedded_sentences(fake_extractor):
@@ -330,7 +334,7 @@ def test_ask_keeps_a_lexical_hit_above_unrelated_embedded_sentences(fake_extract
     st.ingest_text("The gamma route is unrelated. The delta route is unrelated too.", "embedded")
     st.ingest_text("The encoder maps text to a vector.", "plain")
     st.emb.pop("plain")                        # e.g. a sidecar block rejected at load
-    lines = st.ask("alpha: to a vector?").split("\n")
+    lines = st.ask("alpha: to a vector?", scorer="sonar").split("\n")
     assert lines[0].endswith("scorer=sonar (1/2 docs)")     # the mix is visible
     assert lines[lines.index("--") + 1].startswith("plain s0:")
 
@@ -341,8 +345,8 @@ def test_ask_abstains_when_no_embedded_sentence_clears_the_cosine_floor(fake_ext
     st = GraphStore(extractor=ex)
     st.ingest_text("The gamma route is unrelated.", "embedded")
     assert st.emb["embedded"].shape[0] == 1
-    assert st.ask("which route?") == "no material for 'which route?'"   # lexical would serve it
-    assert "route" in st.ask("which route?", scorer="lexical")
+    assert st.ask("which route?", scorer="sonar") == "no material for 'which route?'"
+    assert "route" in st.ask("which route?", scorer="lexical")   # lexical would serve it
 
 
 def test_ask_scorer_lexical_ignores_the_embeddings(emb_store):
@@ -354,8 +358,9 @@ def test_ask_scorer_sonar_falls_back_with_a_note(ask_store):
         "entities: encoder, text · scorer=lexical (sonar unavailable)")
 
 
-def test_ask_treats_an_unknown_scorer_as_auto(emb_store):
-    assert "· scorer=sonar" in emb_store().ask(Q, scorer="SONAR-v2")
+def test_ask_rejects_an_unknown_scorer(emb_store):
+    with pytest.raises(ValueError, match="unknown scorer"):
+        emb_store().ask(Q, scorer="SONAR-v2")
 
 
 def test_ask_falls_back_to_lexical_when_the_question_cannot_be_encoded(emb_store):
@@ -410,7 +415,7 @@ def test_missing_sidecar_leaves_the_store_lexical(tmp_path, fake_extractor, emb_
     back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
     back.load()
     assert back.emb == {}
-    assert "· scorer=lexical" in back.ask(Q)
+    assert "· scorer=lexical (sonar unavailable)" in back.ask(Q, scorer="sonar")
 
 
 def test_corrupt_sidecar_is_tolerated(tmp_path, fake_extractor, emb_store):
@@ -445,7 +450,7 @@ def test_sidecar_with_a_one_dimensional_matrix_is_rejected(tmp_path, fake_extrac
     back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
     back.load()
     assert back.emb == {}
-    assert "· scorer=lexical" in back.ask(Q)           # no IndexError out of _embedding_matrix
+    assert "· scorer=lexical (sonar unavailable)" in back.ask(Q, scorer="sonar")
 
 
 def test_sidecar_with_a_non_float_matrix_is_rejected(tmp_path, fake_extractor, emb_store):
@@ -550,7 +555,7 @@ def test_ask_releases_the_lock_before_encoding_the_question(fake_extractor):
     ex.encode_batch = slow_encode
     st = GraphStore(extractor=ex)
     st.ingest_text(ASK_DOC, "t")
-    reader = threading.Thread(target=st.ask, args=(Q,))
+    reader = threading.Thread(target=st.ask, args=(Q,), kwargs={"scorer": "sonar"})
     reader.start()
     assert encoding.wait(5)
     writer = threading.Thread(target=st.ingest_text, args=("The decoder is elsewhere.", "u"))
@@ -589,7 +594,7 @@ def test_a_redirect_in_one_thread_never_hands_the_wire_to_another(fake_extractor
 
     wire = io.StringIO()                           # stands in for the MCP stdio wire
     monkeypatch.setattr(sys, "stdout", wire)
-    reader = threading.Thread(target=st.ask, args=(Q,))
+    reader = threading.Thread(target=st.ask, args=(Q,), kwargs={"scorer": "sonar"})
     reader.start()
     assert reader_in.wait(5)
     writer = threading.Thread(target=st.ingest_text, args=("The decoder is elsewhere.", "u"))
@@ -618,10 +623,10 @@ def test_a_first_ask_from_two_threads_loads_the_extractor_once(tmp_path, fake_ex
 
     st = GraphStore(extractor_factory=factory, path=path)
     st.load()
-    first = threading.Thread(target=st.ask, args=(Q,))
+    first = threading.Thread(target=st.ask, args=(Q,), kwargs={"scorer": "sonar"})
     first.start()
     assert loading.wait(5)
-    second = threading.Thread(target=st.ask, args=(Q,))
+    second = threading.Thread(target=st.ask, args=(Q,), kwargs={"scorer": "sonar"})
     second.start()
     for _ in range(100):                           # let a second factory call surface, if any
         if len(calls) > 1:
@@ -675,4 +680,4 @@ def test_sidecar_is_dropped_when_the_document_text_changed_under_it(
     back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
     back.load()
     assert back.emb == {}
-    assert "· scorer=lexical" in back.ask(Q)
+    assert "· scorer=lexical (sonar unavailable)" in back.ask(Q, scorer="sonar")

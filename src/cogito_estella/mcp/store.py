@@ -25,7 +25,7 @@ DIVIDER = "~ class-only, verify with provenance:"
 FACT_SHARE = 0.4                # of `ask`'s budget; the sentences take the rest
 ASK_ENTITIES = 3                # entities resolved from one question
 ASK_MAX_SKIPS = 32              # consecutive oversize sentences before the fill stops
-ASK_SCORERS = ("auto", "lexical", "sonar")          # the scorer contract of `ask`
+ASK_SCORERS = ("lexical", "sonar")                  # the scorer contract of `ask`
 ASK_MAX_IDS = 8                 # ids per fact line in `ask`: one hub group must not eat the cap
 SONAR_COS_FLOOR = 0.2           # below this cosine a sentence is not about the question
 SONAR_FLOOR = (SONAR_COS_FLOOR + 1.0) / 2.0        # the same floor on the scorer's [0, 1] scale
@@ -401,11 +401,13 @@ class GraphStore:
         ents = self.top_entities(limit, prefix)
         return ", ".join(f"{e}({len(self.adj[e])})" for e in ents) or "(empty graph)"
 
-    def ask(self, question: str, budget: int = 600, scorer: str = "auto") -> str:
-        """One call from a question to the facts and sentences that answer it, within budget."""
+    def ask(self, question: str, budget: int = 600, scorer: str = "lexical") -> str:
+        """One call from a question to the facts and sentences that answer it, within budget.
+        IDF is the primary engine; `sonar` ranks the sentence block only when asked for."""
         requested = str(scorer).strip().lower()
         if requested not in ASK_SCORERS:           # a stray value must not pick a scorer by luck
-            requested = "auto"
+            raise ValueError(f"unknown scorer {str(scorer).strip()[:24]!r}; "
+                             f"use one of: {', '.join(ASK_SCORERS)}")
         # snapshot under the lock, then score outside it: one model load must not
         # serialize every other reader and writer behind this call
         with self._lock:
@@ -442,7 +444,7 @@ class GraphStore:
         strictly after them: (cos + 1) / 2 floors near 0.5 while an overlap-free sentence
         scores 0, so the two scales must never be compared row by row."""
         lexical = lex.score(question, boost)
-        note = "lexical (sonar unavailable)" if requested == "sonar" else "lexical"
+        note = "lexical (sonar unavailable)"
         if requested == "lexical" or not lex.n:
             return lexical, "lexical"
         if mat is None:

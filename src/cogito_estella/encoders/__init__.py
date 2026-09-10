@@ -1,8 +1,8 @@
 """Pluggable text encoders behind one contract.
 
 `encode(texts, lang, batch_size, normalize) -> float32 [N, 1024]`. `normalize=None`
-means the encoder's native contract: SONAR raw (the published heads were trained on
-raw SONAR vectors), BGE-M3 unit-norm.
+means the encoder's native contract: SONAR and m2m100-pool raw (their heads were
+trained on unnormalized vectors), BGE-M3 unit-norm.
 """
 from __future__ import annotations
 
@@ -39,29 +39,41 @@ class TextEncoder(Protocol):
                normalize: bool | None = None) -> np.ndarray: ...
 
 
-def _sonar(device: str | None = None, download: bool = True) -> TextEncoder:
+# `pool_path` is uniform across factories; only m2m100-pool carries learned pooling.
+def _sonar(device: str | None = None, download: bool = True,
+           pool_path: str | None = None) -> TextEncoder:
     from cogito_estella.encoders.sonar import SonarEncoder
 
     return SonarEncoder(device=device)
 
 
-def _bge_m3(device: str | None = None, download: bool = True) -> TextEncoder:
+def _bge_m3(device: str | None = None, download: bool = True,
+            pool_path: str | None = None) -> TextEncoder:
     from cogito_estella.encoders.bge_m3 import BgeM3Encoder
 
     return BgeM3Encoder(device=device, download=download)
 
 
+def _m2m100_pool(device: str | None = None, download: bool = True,
+                 pool_path: str | None = None) -> TextEncoder:
+    from cogito_estella.encoders.m2m100_pool import M2m100PoolEncoder
+
+    return M2m100PoolEncoder(device=device, download=download, pool_path=pool_path)
+
+
 # Factories, not classes: importing the registry must not import torch backends.
-ENCODERS: dict[str, Callable[..., TextEncoder]] = {"sonar": _sonar, "bge-m3": _bge_m3}
+ENCODERS: dict[str, Callable[..., TextEncoder]] = {
+    "sonar": _sonar, "bge-m3": _bge_m3, "m2m100-pool": _m2m100_pool}
 
 
-def get_encoder(name: str, device: str | None = None, download: bool = True) -> TextEncoder:
+def get_encoder(name: str, device: str | None = None, download: bool = True,
+                pool_path: str | None = None) -> TextEncoder:
     try:
         factory = ENCODERS[name]
     except KeyError:
         raise ValueError(
             f"unknown encoder {name!r}; available: {', '.join(ENCODERS)}") from None
-    return factory(device=device, download=download)
+    return factory(device=device, download=download, pool_path=pool_path)
 
 
 def resolve_encoder_name(explicit: str | None, checkpoint_names: list[str | None],

@@ -230,14 +230,38 @@ def test_stdio_smoke_persists_across_restarts(tmp_path):
 def test_parse_args_accepts_an_encoder_choice():
     assert parse_args([]).encoder is None
     assert parse_args(["--encoder", "bge-m3"]).encoder == "bge-m3"
+    assert parse_args(["--encoder", "m2m100-pool"]).encoder == "m2m100-pool"
     with pytest.raises(SystemExit):
         parse_args(["--encoder", "sonar-v2"])
 
 
+def test_parse_args_accepts_pooling_weights():
+    assert parse_args([]).pool is None
+    assert parse_args(["--pool", "w/pool.pt"]).pool == Path("w/pool.pt")
+
+
+def test_build_extractor_stops_the_server_when_the_pooling_weights_are_missing(monkeypatch):
+    import cogito_estella.integrations.llamaindex_connector as lc
+    from cogito_estella.encoders.pooling import PoolWeightsError
+
+    def boom(*_a, **_k):
+        raise PoolWeightsError("pooling weights not found: pool.pt")
+
+    class Failing(_StubExtractor):
+        check_canary = boom
+
+    monkeypatch.setattr(lc, "CogitoGraphExtractor", Failing)
+    with pytest.raises(SystemExit) as exc:
+        build_extractor([Path("a.pt")], Path("v.json"),
+                        parse_args(["--encoder", "m2m100-pool", "--pool", "pool.pt"]))
+    assert "pooling weights not found" in str(exc.value)
+
+
 class _StubExtractor:
-    def __init__(self, ckpts, vocab, device=None, encoder=None, download=True):
+    def __init__(self, ckpts, vocab, device=None, encoder=None, download=True,
+                 pool_path=None):
         self.args = {"ckpts": ckpts, "vocab": vocab, "device": device,
-                     "encoder": encoder, "download": download}
+                     "encoder": encoder, "download": download, "pool_path": pool_path}
         self.canaries = 0
 
     def check_canary(self):
@@ -247,11 +271,13 @@ class _StubExtractor:
 def test_build_extractor_forwards_the_flags_and_runs_the_canary_once(monkeypatch):
     import cogito_estella.integrations.llamaindex_connector as lc
     monkeypatch.setattr(lc, "CogitoGraphExtractor", _StubExtractor)
-    ns = parse_args(["--encoder", "bge-m3", "--no-download", "--device", "cpu"])
+    ns = parse_args(["--encoder", "bge-m3", "--no-download", "--device", "cpu",
+                     "--pool", "pool.pt"])
     ex = build_extractor([Path("a.pt")], Path("v.json"), ns)
     assert ex.canaries == 1
     assert ex.args == {"ckpts": ["a.pt"], "vocab": "v.json", "device": "cpu",
-                       "encoder": "bge-m3", "download": False}
+                       "encoder": "bge-m3", "download": False,
+                       "pool_path": Path("pool.pt")}
 
 
 @pytest.mark.parametrize("where", ["init", "canary"])

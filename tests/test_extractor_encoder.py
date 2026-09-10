@@ -128,15 +128,16 @@ def test_the_encoder_is_built_from_the_registry_on_first_use(ck, vocab_file, fak
                                                              monkeypatch):
     made = []
 
-    def fake_get(name, device=None, download=True):
-        made.append((name, device, download))
+    def fake_get(name, device=None, download=True, pool_path=None):
+        made.append((name, device, download, pool_path))
         return fake_encoder(name)
 
     monkeypatch.setattr(lc, "get_encoder", fake_get)
-    ex = CogitoGraphExtractor(ck(encoder="sonar"), vocab_file, device="cpu", download=False)
+    ex = CogitoGraphExtractor(ck(encoder="sonar"), vocab_file, device="cpu", download=False,
+                              pool_path="w/pool.pt")
     assert made == []                              # constructing an extractor loads no weights
     assert ex.encoder.name == "sonar" and ex.encoder is ex.encoder
-    assert made == [("sonar", "cpu", False)]
+    assert made == [("sonar", "cpu", False, "w/pool.pt")]
 
 
 def test_a_raw_checkpoint_asks_the_encoder_for_its_native_vectors(ck, vocab_file,

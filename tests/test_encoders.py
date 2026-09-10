@@ -1,6 +1,7 @@
 """Encoder registry, precedence and contract. Real adapters run under -m integration."""
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -20,6 +21,13 @@ from cogito_estella.encoders import (
     resolve_encoder_name,
 )
 from cogito_estella.encoders.bge_m3 import BGE_M3_REVISION, BgeM3Encoder
+from cogito_estella.encoders.m2m100_pool import (
+    LANG_TO_M2M,
+    M2M100_REVISION,
+    M2m100PoolEncoder,
+    lang_to_m2m,
+)
+from cogito_estella.encoders.pooling import AttnPool, PoolWeightsError, load_pool, sha256_file
 from cogito_estella.encoders.sonar import SonarEncoder
 
 TEXTS = [
@@ -31,17 +39,39 @@ TEXTS = [
 ]
 
 
+@pytest.fixture(scope="module")
+def pool_file(tmp_path_factory):
+    """A real 1024-d AttnPool saved in the exp058 checkpoint layout (no weights loaded)."""
+    path = tmp_path_factory.mktemp("pool") / "pool.pt"
+    torch.save({"pool": AttnPool().state_dict(),
+                "arch": {"d": 1024, "heads": 8, "queries": 1, "hidden": 1024},
+                "epoch": 5}, path)
+    return path
+
+
 # --- registry -------------------------------------------------------------------
 
-def test_registry_keys_are_exactly_sonar_and_bge_m3():
-    assert set(ENCODERS) == {"sonar", "bge-m3"}
+def test_registry_keys_are_exactly_the_three_adapters():
+    assert set(ENCODERS) == {"sonar", "bge-m3", "m2m100-pool"}
     assert DEFAULT_ENCODER == "sonar"
 
 
 def test_get_encoder_unknown_name_lists_the_available_ones():
     with pytest.raises(ValueError) as exc:
         get_encoder("nope")
-    assert "sonar" in str(exc.value) and "bge-m3" in str(exc.value)
+    for name in ENCODERS:
+        assert name in str(exc.value)
+
+
+def test_get_encoder_threads_the_pool_path_to_the_factory(pool_file, monkeypatch):
+    monkeypatch.delenv("COGITO_POOL", raising=False)
+    enc = get_encoder("m2m100-pool", device="cpu", download=False, pool_path=pool_file)
+    assert enc.name == "m2m100-pool" and str(enc.pool_path) == str(pool_file)
+
+
+@pytest.mark.parametrize("name", ["sonar", "bge-m3"])
+def test_pool_path_is_ignored_by_the_encoders_without_pooling(name, pool_file):
+    assert get_encoder(name, device="cpu", download=False, pool_path=pool_file).name == name
 
 
 # --- precedence -----------------------------------------------------------------
@@ -117,12 +147,19 @@ def test_adapters_expose_metadata_without_loading_weights():
     assert bge._model is None
 
 
-@pytest.mark.parametrize("adapter", [
-    lambda: SonarEncoder(device="cpu"),
-    lambda: BgeM3Encoder(device="cpu", download=False),
-])
-def test_empty_input_returns_an_empty_matrix_without_loading_weights(adapter):
-    out = adapter().encode([])
+def test_m2m100_pool_exposes_metadata_without_loading_weights(pool_file):
+    enc = M2m100PoolEncoder(device="cpu", download=False, pool_path=pool_file)
+    assert (enc.name, enc.dim, enc.native_normalized) == ("m2m100-pool", 1024, False)
+    assert enc.pool_sha256 == sha256_file(pool_file)
+    assert enc.revision == f"{M2M100_REVISION}+pool:{enc.pool_sha256[:12]}"
+    assert len(M2M100_REVISION) == 40
+    assert enc._model is None and enc._pool is None
+
+
+@pytest.mark.parametrize("name", ["sonar", "bge-m3", "m2m100-pool"])
+def test_empty_input_returns_an_empty_matrix_without_loading_weights(name, pool_file):
+    enc = get_encoder(name, device="cpu", download=False, pool_path=pool_file)
+    out = enc.encode([])
     assert out.shape == (0, 1024) and out.dtype == np.float32
 
 
@@ -199,14 +236,170 @@ def test_bge_m3_encode_chunks_by_batch_size_and_keeps_row_order():
     assert out.argmax(axis=1).tolist() == list(range(7))
 
 
+# --- learned pooling ------------------------------------------------------------
+
+def test_load_pool_round_trips_a_saved_attnpool(tmp_path):
+    src = AttnPool(d=16, heads=2, queries=1, hidden=8).eval()
+    path = tmp_path / "tiny.pt"
+    torch.save({"pool": src.state_dict(), "heads": {}, "epoch": 1,
+                "arch": {"d": 16, "heads": 2, "queries": 1, "hidden": 8}}, path)
+    back = load_pool(path, "cpu")
+    h, mask = torch.randn(3, 5, 16), torch.ones(3, 5, dtype=torch.bool)
+    mask[1, 3:] = False
+    with torch.inference_mode():
+        assert torch.allclose(src(h, mask), back(h, mask), atol=1e-6)
+    assert back.training is False
+
+
+def test_load_pool_reports_a_missing_file(tmp_path):
+    with pytest.raises(PoolWeightsError) as exc:
+        load_pool(tmp_path / "absent.pt", "cpu")
+    assert "absent.pt" in str(exc.value)
+
+
+def test_load_pool_reports_a_checkpoint_without_pool_weights(tmp_path):
+    path = tmp_path / "heads_only.pt"
+    torch.save({"heads": {}, "epoch": 1}, path)
+    with pytest.raises(PoolWeightsError) as exc:
+        load_pool(path, "cpu")
+    assert "pool" in str(exc.value)
+
+
+def test_sha256_file_matches_hashlib(tmp_path):
+    import hashlib
+
+    path = tmp_path / "blob.bin"
+    payload = b"cogito" * 5000
+    path.write_bytes(payload)
+    assert sha256_file(path) == hashlib.sha256(payload).hexdigest()
+
+
+# --- m2m100-pool language codes -------------------------------------------------
+
+def test_sonar_language_codes_map_to_m2m100_codes():
+    assert lang_to_m2m("eng_Latn") == "en"
+    assert lang_to_m2m("spa_Latn") == "es"
+    assert lang_to_m2m("zho_Hans") == "zh"
+    assert LANG_TO_M2M["arb_Arab"] == "ar" and LANG_TO_M2M["jpn_Jpan"] == "ja"
+    assert len(set(LANG_TO_M2M.values())) == len(LANG_TO_M2M)
+
+
+def test_an_unknown_language_falls_back_to_english_and_warns_once(capsys, monkeypatch):
+    import cogito_estella.encoders.m2m100_pool as mod
+
+    monkeypatch.setattr(mod, "_WARNED", set())
+    assert mod.lang_to_m2m("kli_Piqd") == "en"
+    assert mod.lang_to_m2m("kli_Piqd") == "en"
+    err = capsys.readouterr().err
+    assert err.count("kli_Piqd") == 1 and "en" in err
+
+
+# --- m2m100-pool adapter --------------------------------------------------------
+
+def test_m2m100_pool_without_any_pool_path_says_how_to_supply_one(monkeypatch):
+    monkeypatch.delenv("COGITO_POOL", raising=False)
+    with pytest.raises(PoolWeightsError) as exc:
+        M2m100PoolEncoder(device="cpu", download=False)
+    assert "COGITO_POOL" in str(exc.value) and "pool" in str(exc.value)
+
+
+def test_m2m100_pool_reads_the_pool_path_from_the_environment(pool_file, monkeypatch):
+    monkeypatch.setenv("COGITO_POOL", str(pool_file))
+    enc = M2m100PoolEncoder(device="cpu", download=False)
+    assert str(enc.pool_path) == str(pool_file)
+
+
+def test_an_explicit_pool_path_wins_over_the_environment(pool_file, tmp_path, monkeypatch):
+    monkeypatch.setenv("COGITO_POOL", str(tmp_path / "never.pt"))
+    enc = M2m100PoolEncoder(device="cpu", download=False, pool_path=pool_file)
+    assert str(enc.pool_path) == str(pool_file)
+
+
+def test_a_pool_of_another_width_is_rejected_against_the_encoder_contract(tmp_path):
+    path = tmp_path / "narrow.pt"
+    torch.save({"pool": AttnPool(d=16, heads=2, queries=1, hidden=8).state_dict(),
+                "arch": {"d": 16, "heads": 2, "queries": 1, "hidden": 8}}, path)
+    enc = M2m100PoolEncoder(device="cpu", download=False, pool_path=path)
+    with pytest.raises(PoolWeightsError) as exc:
+        enc._load_pool()
+    assert "16" in str(exc.value) and "1024" in str(exc.value)
+
+
+class _FakeM2mBatch(dict):
+    def to(self, device):
+        return self
+
+
+class _FakeM2mTokenizer:
+    """Records batches and the src_lang each was tokenized under."""
+
+    def __init__(self):
+        self.batches, self.kwargs = [], []
+        self.src_lang = "en"
+
+    def __call__(self, texts, **kwargs):
+        self.batches.append((list(texts), self.src_lang))
+        self.kwargs.append(kwargs)
+        ids = torch.tensor([[int(t)] for t in texts])
+        return _FakeM2mBatch(input_ids=ids,
+                             attention_mask=torch.ones_like(ids))
+
+
+class _FakeM2mModel:
+    """One-hot token state at column `id`, so pooling preserves the row identity."""
+
+    def __call__(self, input_ids, attention_mask):
+        hidden = torch.zeros(len(input_ids), 1, 1024)
+        hidden[torch.arange(len(input_ids)), 0, input_ids[:, 0]] = 3.0
+        return SimpleNamespace(last_hidden_state=hidden)
+
+
+def _fake_m2m(pool_file, monkeypatch):
+    monkeypatch.delenv("COGITO_POOL", raising=False)
+    enc = M2m100PoolEncoder(device="cpu", download=False, pool_path=pool_file)
+    enc._tok, enc._model = _FakeM2mTokenizer(), _FakeM2mModel()
+    enc._pool = lambda h, mask: h[:, 0]          # masked pooling stands in as first token
+    return enc
+
+
+def test_m2m100_pool_encode_chunks_by_batch_size_and_keeps_row_order(pool_file, monkeypatch):
+    enc = _fake_m2m(pool_file, monkeypatch)
+    out = enc.encode([str(i) for i in range(7)], batch_size=3)
+    assert [len(b) for b, _ in enc._tok.batches] == [3, 3, 1]
+    assert out.shape == (7, 1024) and out.dtype == np.float32
+    assert out.argmax(axis=1).tolist() == list(range(7))
+    assert enc._tok.kwargs[0]["max_length"] == 128 and enc._tok.kwargs[0]["truncation"] is True
+
+
+@pytest.mark.parametrize("normalize", [None, False])
+def test_m2m100_pool_is_raw_natively_because_the_trunk_was_trained_on_raw(normalize,
+                                                                          pool_file,
+                                                                          monkeypatch):
+    enc = _fake_m2m(pool_file, monkeypatch)
+    out = enc.encode(["1", "2"], normalize=normalize)
+    assert np.allclose(np.linalg.norm(out, axis=1), 3.0, atol=1e-5)
+
+
+def test_m2m100_pool_normalizes_on_request(pool_file, monkeypatch):
+    enc = _fake_m2m(pool_file, monkeypatch)
+    out = enc.encode(["1", "2"], normalize=True)
+    assert np.allclose(np.linalg.norm(out, axis=1), 1.0, atol=1e-6)
+
+
+def test_m2m100_pool_passes_the_mapped_language_to_the_tokenizer(pool_file, monkeypatch):
+    enc = _fake_m2m(pool_file, monkeypatch)
+    enc.encode(["1"], lang="spa_Latn")
+    assert enc._tok.batches[-1][1] == "es"
+
+
 # --- canary file ----------------------------------------------------------------
 
-def test_canary_file_is_shipped_and_covers_both_encoders():
+def test_canary_file_is_shipped_and_covers_every_registered_encoder():
     assert CANARY_PATH.exists()
     data = load_canary()
     assert data["pairs"] == [list(p) for p in CANARY_PAIRS]
     assert len(CANARY_PAIRS) == 2 and all(len(p) == 2 for p in CANARY_PAIRS)
-    for name in ("sonar", "bge-m3"):
+    for name in ENCODERS:
         cosines = data[name]["cosines"]
         assert len(cosines) == len(CANARY_PAIRS)
         assert all(-1.0 <= c <= 1.0 for c in cosines)
@@ -269,13 +462,17 @@ def test_canary_refresh_is_opt_in(monkeypatch):
     assert _refresh_requested() is True
 
 
-@pytest.fixture(scope="module", params=["sonar", "bge-m3"])
+@pytest.fixture(scope="module", params=["sonar", "bge-m3", "m2m100-pool"])
 def real_encoder(request):
     """One real encoder at a time; VRAM is released before the next parameter."""
     if not torch.cuda.is_available():
         pytest.skip("cuda unavailable")
     if request.param == "sonar":
         pytest.importorskip("sonar")
+    if request.param == "m2m100-pool":
+        pool = os.environ.get("COGITO_POOL")
+        if not pool or not Path(pool).exists():
+            pytest.skip("COGITO_POOL does not point at pooling weights")
     enc = get_encoder(request.param, device="cuda", download=False)
     try:
         enc.encode(["warm up"], normalize=True)
@@ -307,6 +504,8 @@ def test_canary_cosines_match_the_shipped_reference(real_encoder):
     from cogito_estella.encoders import canary_cosines, write_canary
 
     fresh = canary_cosines(real_encoder)
+    if real_encoder.name not in load_canary():
+        write_canary(real_encoder, fresh)          # first baseline for a new encoder
     stored = load_canary()[real_encoder.name]
     assert stored["revision"] == real_encoder.revision and stored["dim"] == real_encoder.dim
     dev = float(np.max(np.abs(np.array(stored["cosines"]) - np.array(fresh))))

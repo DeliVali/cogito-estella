@@ -31,6 +31,7 @@ mcp = [
     "wtpsplit>=2.1",
     "tiktoken>=0.7",
     "huggingface-hub>=0.23",
+    "sentencepiece>=0.2",
 ]
 pdf = [
     "pypdf>=4",

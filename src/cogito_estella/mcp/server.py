@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from cogito_estella.encoders import ENCODERS, EncoderMismatch
+from cogito_estella.encoders.pooling import PoolWeightsError
 from cogito_estella.mcp.store import GraphStore
 from cogito_estella.mcp.weights import WeightsError, ensure_spacy_model, resolve
 
@@ -139,6 +140,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--device", default=None, help="cuda | cpu (default: auto)")
     ap.add_argument("--encoder", choices=sorted(ENCODERS), default=None,
                     help="text encoder (default: whatever the checkpoints were trained on)")
+    ap.add_argument("--pool", type=Path, default=None,
+                    help="learned pooling weights (m2m100-pool; env COGITO_POOL)")
     ap.add_argument("--no-download", dest="download", action="store_false",
                     help="never download weights or the spaCy model")
     return ap.parse_args(argv)
@@ -151,9 +154,10 @@ def build_extractor(ckpts, vocab, ns: argparse.Namespace):
     try:
         ex = connector.CogitoGraphExtractor([str(c) for c in ckpts], str(vocab),
                                             device=ns.device, encoder=ns.encoder,
-                                            download=ns.download)
+                                            download=ns.download,
+                                            pool_path=ns.pool)
         ex.check_canary()
-    except EncoderMismatch as exc:
+    except (EncoderMismatch, PoolWeightsError) as exc:
         sys.exit(f"cogito-mcp: {exc}")
     return ex
 

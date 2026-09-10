@@ -236,7 +236,8 @@ class CogitoGraphExtractor:
 
     def __init__(self, checkpoint, vocab_path: str, device: str | None = None,
                  threshold: float | None = None, adj_threshold: float | None = None,
-                 force_top1: bool = True, encoder=None, download: bool = True):
+                 force_top1: bool = True, encoder=None, download: bool = True,
+                 pool_path=None):
         """`checkpoint`: a single path, or a list of paths for prob-averaged ensemble
         decoding (the validated 0.827 recipe ships as 5 checkpoints). Defaults follow
         the validated operating points: single model (0.15, 0.15); ensemble (0.1, 0.8)
@@ -246,7 +247,7 @@ class CogitoGraphExtractor:
         semantic spaces, so a checkpoint decoded with the wrong encoder returns
         plausible garbage: every checkpoint declares the encoder it was trained on and
         a disagreement raises EncoderMismatch here rather than surfacing as bad
-        triples."""
+        triples. `pool_path`: learned pooling weights, for encoders that need them."""
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         vocab = json.loads(Path(vocab_path).read_text())
         self.ent2id = vocab["ent2id"]
@@ -261,6 +262,7 @@ class CogitoGraphExtractor:
                for path in paths]
         self._encoder = encoder if not isinstance(encoder, str) else None
         self._download = download
+        self._pool_path = pool_path
         explicit = encoder if isinstance(encoder, str) else (
             encoder.name if encoder is not None else None)     # a nameless encoder is a defect
         self.encoder_name = resolve_encoder_name(
@@ -297,7 +299,8 @@ class CogitoGraphExtractor:
     def encoder(self):
         """Built on first use: constructing an extractor must not load model weights."""
         if self._encoder is None:
-            self._encoder = get_encoder(self.encoder_name, self.device, self._download)
+            self._encoder = get_encoder(self.encoder_name, self.device, self._download,
+                                        self._pool_path)
         return self._encoder
 
     def check_canary(self) -> None:

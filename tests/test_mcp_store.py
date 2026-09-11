@@ -358,6 +358,14 @@ def test_ask_scorer_sonar_falls_back_with_a_note(ask_store):
         "entities: encoder, text · scorer=lexical (dense unavailable)")
 
 
+def test_ask_scorer_sonar_falls_back_when_the_question_is_not_as_wide_as_the_sidecar(emb_store):
+    """A sidecar written by one encoder and a question encoded by another: the product is
+    undefined, so the arm degrades to the lexical order instead of raising out of `ask`."""
+    st = emb_store()
+    st._ex.encode_batch = keyed_vectors()              # 4 wide against an 8 wide sidecar
+    assert "· scorer=lexical (dense unavailable)" in st.ask(Q, scorer="sonar")
+
+
 def test_ask_rejects_an_unknown_scorer(emb_store):
     with pytest.raises(ValueError, match="unknown scorer"):
         emb_store().ask(Q, scorer="SONAR-v2")

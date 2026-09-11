@@ -17,16 +17,27 @@ from pathlib import Path
 
 import numpy as np
 
-from cogito_estella.mcp.rank import LexicalScorer, SonarScorer, rank, singular_forms
+from cogito_estella.mcp.rank import LexicalScorer, SonarScorer, rank, singular_forms, tokenize
+from cogito_estella.mcp.rerank import (
+    FeatureContext,
+    bigrams,
+    bm25_scores,
+    corpus_avgdl,
+    featurize,
+    load_default,
+)
 from cogito_estella.mcp.tokens import Ledger, ntok
 
 BATCH = 64
 DIVIDER = "~ class-only, verify with provenance:"
 FACT_SHARE = 0.4                # of `ask`'s budget; the sentences take the rest
+ASK_BUDGET = 600                # default token budget of one `ask`
 ASK_ENTITIES = 3                # entities resolved from one question
 ASK_MAX_SKIPS = 32              # consecutive oversize sentences before the fill stops
-ASK_SCORERS = ("lexical", "dense")                  # the scorer contract of `ask`
+ASK_SCORERS = ("lexical", "dense", "learned")       # the scorer contract of `ask`
 SCORER_ALIASES = {"sonar": "dense"}                 # older name of the dense ranking
+ASK_CANDIDATES = 60             # smallest lexical shortlist the learned scorer re-orders
+ASK_CAND_TOKENS = 10            # budget per extra shortlist slot: the block must not outrun it
 ASK_MAX_IDS = 8                 # ids per fact line in `ask`: one hub group must not eat the cap
 DENSE_COS_FLOOR = 0.2           # below this cosine a sentence is not about the question
 DENSE_FLOOR = (DENSE_COS_FLOOR + 1.0) / 2.0        # the same floor on the scorer's [0, 1] scale
@@ -87,6 +98,25 @@ class IngestResult:
                 f"seconds={self.seconds}")
 
 
+@dataclass
+class _AskSnapshot:
+    """What one `ask` reads from the graph under the lock; scoring then runs outside it."""
+
+    texts: list
+    keys: list
+    ents: list
+    boost: set
+    mat: object
+    mask: object
+    cover: str
+    doc_sents: dict
+
+    def rel_pos(self, key) -> float:
+        """Where a sentence sits in its own document, 0 at the head and 1 at the tail."""
+        src, si = key
+        return si / max(self.doc_sents.get(src, 1) - 1, 1)
+
+
 class GraphStore:
     def __init__(self, extractor=None, extractor_factory=None, path: Path | None = None):
         self._ex = extractor
@@ -99,6 +129,7 @@ class GraphStore:
         self.emb: dict[str, np.ndarray] = {}       # source -> [n_sents, D] float16, normalized
         self._sindex: tuple | None = None          # flat sentence universe, rebuilt on change
         self._lex: LexicalScorer | None = None     # IDF over that universe, rebuilt with it
+        self._avgdl: float | None = None           # mean sentence length of that universe
         self._emb_warned = False
         self._emb_keep_warned = False
         self.ledger = Ledger()
@@ -274,9 +305,10 @@ class GraphStore:
         return ""
 
     def _invalidate_index(self) -> None:
-        """The sentence universe changed: flat index and IDF scorer are both stale."""
+        """The sentence universe changed: index, IDF scorer and length normalizer are stale."""
         self._sindex = None
         self._lex = None
+        self._avgdl = None
 
     def _lexical_scorer(self) -> LexicalScorer:
         """IDF over the whole universe: built once per corpus, not once per question."""
@@ -423,16 +455,27 @@ class GraphStore:
         ents = self.top_entities(limit, prefix)
         return ", ".join(f"{e}({len(self.adj[e])})" for e in ents) or "(empty graph)"
 
-    def ask(self, question: str, budget: int = 600, scorer: str = "lexical") -> str:
+    def ask(self, question: str, budget: int = ASK_BUDGET, scorer: str = "lexical") -> str:
         """One call from a question to the facts and sentences that answer it, within budget.
-        IDF is the primary engine; `dense` (older name `sonar`) ranks the sentence block only when asked for."""
+        IDF is the primary engine; `dense` (older name `sonar`) and `learned` re-rank the
+        sentence block only when asked for."""
         requested = str(scorer).strip().lower()
         requested = SCORER_ALIASES.get(requested, requested)
         if requested not in ASK_SCORERS:           # a stray value must not pick a scorer by luck
             raise ValueError(f"unknown scorer {str(scorer).strip()[:24]!r}; "
                              f"use one of: {', '.join(ASK_SCORERS)}")
-        # snapshot under the lock, then score outside it: one model load must not
-        # serialize every other reader and writer behind this call
+        lex, snap, edges = self._ask_snapshot(question, dense=requested != "lexical")
+        scores, name = self._score_sentences(question, lex, snap, requested, budget)
+        if not snap.ents and not any(s > 0 for s in scores):
+            return f"no material for '{question}'"
+        head = f"entities: {', '.join(snap.ents) or '(none)'} · scorer={name}"
+        body = [head, *self._fact_lines(edges, head, int(budget * FACT_SHARE))]
+        sents = self._sentence_lines(snap.texts, snap.keys, scores, body, budget)
+        return "\n".join(body + (["--"] + sents if sents else []))
+
+    def _ask_snapshot(self, question, dense: bool):
+        """(lexical scorer, snapshot, retrieved edges). Read under the lock, scored outside it:
+        one model load must not serialize every other reader and writer behind this call."""
         with self._lock:
             texts, keys, pos = self.sentence_index()
             lex = self._lexical_scorer()
@@ -446,47 +489,137 @@ class GraphStore:
             # every retrieved fact boosts its own sentence, whether or not the line survives
             boost = {pos[(e["source"], e["sent_idx"])] for e in edges
                      if (e["source"], e["sent_idx"]) in pos}
-            mat, mask = (None, None) if requested == "lexical" \
-                else self._embedding_matrix(keys)
-            cover = self._embedded_note()
-        scores, name = self._score_sentences(question, lex, mat, mask, cover, requested, boost)
-        if not ents and not any(s > 0 for s in scores):
-            return f"no material for '{question}'"
-        head = f"entities: {', '.join(ents) or '(none)'} · scorer={name}"
-        body = [head, *self._fact_lines(edges, head, int(budget * FACT_SHARE))]
-        sents = self._sentence_lines(texts, keys, scores, body, budget)
-        return "\n".join(body + (["--"] + sents if sents else []))
+            mat, mask = self._embedding_matrix(keys) if dense else (None, None)
+            snap = _AskSnapshot(texts=texts, keys=keys, ents=ents, boost=boost, mat=mat,
+                                mask=mask, cover=self._embedded_note(),
+                                doc_sents={src: d["sentences"] for src, d in self.docs.items()})
+        return lex, snap, edges
 
     def _embedded_note(self) -> str:
         """`(n/m docs)` when only part of the corpus is embedded: a mixed ranking must say so."""
         embedded = sum(1 for src in self.docs if src in self.emb)
         return "" if embedded >= len(self.docs) else f" ({embedded}/{len(self.docs)} docs)"
 
-    def _score_sentences(self, question, lex, mat, mask, cover, requested, boost):
+    def _score_sentences(self, question, lex, snap, requested, budget=ASK_BUDGET):
         """(scores, scorer name). SONAR ranks the embedded sentences, the lexical ones rank
         strictly after them: (cos + 1) / 2 floors near 0.5 while an overlap-free sentence
         scores 0, so the two scales must never be compared row by row."""
-        lexical = lex.score(question, boost)
-        note = "lexical (dense unavailable)"
+        lexical = lex.score(question, snap.boost)
         if requested == "lexical" or not lex.n:
             return lexical, "lexical"
-        if mat is None:
+        if requested == "learned":
+            learned = self._learned_scores(question, lex, lexical, snap, budget)
+            return (learned, "learned") if learned is not None \
+                else (lexical, "lexical (learned unavailable)")
+        note = "lexical (dense unavailable)"
+        if snap.mat is None:
             return lexical, note
-        try:
-            with _quiet():
-                q = np.asarray(self.extractor.encode_batch([question]), dtype=np.float32)
-                sonar = SonarScorer(mat, lambda _texts: q).score(question, boost)
-        except Exception as exc:                   # noqa: BLE001 - a missing encoder is a fallback
-            print(f"cogito-mcp: question encoding failed ({exc}); ask ranks lexically",
-                  file=sys.stderr)
+        q = self._encode_question(question, width=snap.mat.shape[1])
+        if q is None:
             return lexical, note
+        sonar = SonarScorer(snap.mat, lambda _texts: q).score(question, snap.boost)
         out = []
         for i in range(lex.n):
-            if not mask[i]:
+            if not snap.mask[i]:
                 out.append(lexical[i])
             else:                                  # the floor keeps `no material` reachable
                 out.append(DENSE_OFFSET + sonar[i] if sonar[i] >= DENSE_FLOOR else 0.0)
-        return out, f"dense{cover}"
+        return out, f"dense{snap.cover}"
+
+    def _encode_question(self, question, width=None):
+        """The question as a flat row, or None when no encoder answers for it or its width
+        does not match the stored rows: a mismatched product is a crash, not a ranking."""
+        try:
+            with _quiet():                         # stdout is the MCP wire
+                q = np.asarray(self.extractor.encode_batch([question]), dtype=np.float32)
+        except Exception as exc:                   # noqa: BLE001 - a missing encoder is a fallback
+            print(f"cogito-mcp: question encoding failed ({exc}); ask ranks lexically",
+                  file=sys.stderr)
+            return None
+        q = q.reshape(-1)
+        if width is not None and q.size != int(width):
+            print(f"cogito-mcp: question width {q.size} does not match the stored {int(width)}; "
+                  "ask ranks lexically", file=sys.stderr)
+            return None
+        return q
+
+    def _question_cosines(self, question, snap):
+        """(cosine per sentence, availability per sentence) for the dense feature; both None
+        when the corpus carries no embedding or the question will not encode."""
+        if snap.mat is None:
+            return None, None
+        q = self._encode_question(question, width=snap.mat.shape[1])
+        if q is None:
+            return None, None
+        norm = float(np.linalg.norm(q))
+        if norm:
+            q = q / norm                           # a stray scale must not skew cosine
+        cos = np.clip(np.asarray(snap.mat, dtype=np.float32) @ q, -1.0, 1.0)
+        return cos, snap.mask
+
+    def sentence_avgdl(self) -> float:
+        """Mean token length of the whole sentence universe: the length normalizer a fit pins
+        and the query path hands back to the ranking column."""
+        with self._lock:
+            if self._avgdl is None:
+                self._avgdl = corpus_avgdl([tokenize(t) for t in self.sentence_index()[0]])
+            return self._avgdl
+
+    def learned_candidates(self, question: str, budget: int = ASK_BUDGET, model=None,
+                           avgdl: float | None = None):
+        """(indices into the sentence universe, their texts, feature context) for the learned
+        ranking. The fit path and the query path go through this one rule, so the shortlist and
+        the feature columns cannot drift apart between them."""
+        lex, snap, _edges = self._ask_snapshot(question, dense=True)
+        return self._candidates(question, lex, lex.score(question, snap.boost), snap,
+                                budget, model, avgdl)
+
+    def _candidates(self, question, lex, lexical, snap, budget, model, avgdl=None):
+        # the shortlist grows with the budget: a fixed cap would truncate the block that the
+        # lexical arm keeps filling, and silently compare two different depths
+        width = max(ASK_CANDIDATES, int(budget) // ASK_CAND_TOKENS)
+        cand = [i for i in rank(lexical, width) if lexical[i] > 0]
+        ctx = self._feature_context(question, lex, lexical, snap, cand, model, avgdl)
+        return cand, [snap.texts[i] for i in cand], ctx
+
+    def _learned_scores(self, question, lex, lexical, snap, budget=ASK_BUDGET):
+        """Model scores over the lexical shortlist, mapped onto the sentence universe, or None
+        when no usable weights ship: the caller then keeps the lexical order.
+
+        The returned values carry the ranking and nothing else - a logit has no floor, and the
+        fill stops at the first non-positive score."""
+        model = load_default()
+        if model is None:
+            return None
+        cand, texts, ctx = self._candidates(question, lex, lexical, snap, budget, model)
+        if not cand:
+            return None
+        out = [0.0] * len(lexical)
+        for place, j in enumerate(rank(model.score(featurize(question, texts, ctx))), start=1):
+            out[cand[j]] = 1.0 / place
+        return out
+
+    def _feature_context(self, question, lex, lexical, snap, cand, model, avgdl=None):
+        q_tokens = tokenize(question)
+        cos, avail = self._question_cosines(question, snap) if cand else (None, None)
+        return FeatureContext(
+            lex_scores=[lexical[i] for i in cand],
+            bm25=bm25_scores([tokenize(snap.texts[i]) for i in cand], lex.idf_of, q_tokens,
+                             avgdl=self._bm25_avgdl(model, avgdl)),
+            q_tokens=q_tokens, q_bigrams=bigrams(q_tokens), q_ents=snap.ents,
+            prov_flags=[i in snap.boost for i in cand],
+            dense_cos=[float(cos[i]) for i in cand] if cos is not None else 0.0,
+            dense_available=[bool(avail[i]) for i in cand] if avail is not None else False,
+            rel_pos=[snap.rel_pos(snap.keys[i]) for i in cand])
+
+    def _bm25_avgdl(self, model, avgdl=None) -> float:
+        """The length normalizer of the ranking column: what the caller pins, else what the
+        weights were fitted with, else the mean length of this universe."""
+        pinned = getattr(model, "bm25_avgdl", None) if model is not None else None
+        for value in (avgdl, pinned):
+            if value is not None:
+                return float(value)
+        return self.sentence_avgdl()
 
     @staticmethod
     def _fit(block: list, lines: list, cap: int) -> list:

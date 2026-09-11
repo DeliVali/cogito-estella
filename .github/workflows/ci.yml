@@ -13,10 +13,12 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Install (core + data extra, CPU torch)
-        run: uv sync --extra data
+      - name: Install (core + data + mcp extras, CPU torch)
+        run: uv sync --extra data --extra mcp
         env:
           UV_TORCH_BACKEND: cpu
+      - name: spaCy model for the MCP tests
+        run: uv run python -m spacy download en_core_web_sm
       - name: Run test suite
         run: uv run pytest tests/ -q
       - name: Build wheel

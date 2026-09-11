@@ -40,9 +40,10 @@ class Tools:
         self.store.ledger.charge(tool, out)
         return out
 
-    def ask(self, question: str, budget: int = 600, use_sonar: bool = False) -> str:
+    def ask(self, question: str, budget: int = 600, use_dense: bool = False,
+            use_sonar: bool = False) -> str:
         budget = min(max(int(budget), ASK_BUDGET_MIN), ASK_BUDGET_MAX)
-        scorer = "sonar" if use_sonar else "lexical"
+        scorer = "dense" if (use_dense or use_sonar) else "lexical"   # use_sonar: older name
         return self._charge("ask", self.store.ask(question, budget, scorer))
 
     def ingest(self, path_or_text: str, source: str = "") -> str:
@@ -87,14 +88,15 @@ def build_server(store: GraphStore):
     t = Tools(store)
 
     @mcp.tool()
-    def ask(question: str, budget: int = 600, use_sonar: bool = False) -> str:
+    def ask(question: str, budget: int = 600, use_dense: bool = False,
+            use_sonar: bool = False) -> str:
         """Start here for any question: graph facts, then a '--' line, then the source
         sentences that answer it, ranked. `budget` caps the reply in tokens (100-4000,
-        40 % facts / 60 % sentences). IDF ranking by default; use_sonar=True ranks the
+        40 % facts / 60 % sentences). IDF ranking by default; use_dense=True ranks the
         sentence block with SONAR embeddings when the graph has them (falls back to
         lexical with a note). Go deeper with `query`, `provenance` and `search` only
         when this reply is not enough."""
-        return t.ask(question, budget, use_sonar)
+        return t.ask(question, budget, use_dense, use_sonar)
 
     @mcp.tool()
     def ingest(path_or_text: str, source: str = "") -> str:

@@ -314,13 +314,13 @@ def test_ingest_stores_normalized_float16_embeddings(emb_store):
 def test_ask_uses_sonar_when_asked_and_embeddings_are_present(emb_store):
     st = emb_store()
     lines = st.ask("The decoder maps text to a vector.", scorer="sonar").split("\n")
-    assert "· scorer=sonar" in lines[0]
+    assert "· scorer=dense" in lines[0]
     first = lines[lines.index("--") + 1]
     assert first == 't s1: "The decoder maps text to a vector."'
 
 
 def test_ask_header_names_sonar_alone_when_every_document_is_embedded(emb_store):
-    assert emb_store().ask(Q, scorer="sonar").split("\n")[0].endswith("scorer=sonar")
+    assert emb_store().ask(Q, scorer="sonar").split("\n")[0].endswith("scorer=dense")
 
 
 def test_ask_ranks_lexically_by_default_even_when_embeddings_exist(emb_store):
@@ -335,7 +335,7 @@ def test_ask_keeps_a_lexical_hit_above_unrelated_embedded_sentences(fake_extract
     st.ingest_text("The encoder maps text to a vector.", "plain")
     assert "plain" not in st.emb               # keyless: an all-zero row is not stored
     lines = st.ask("alpha: to a vector?", scorer="sonar").split("\n")
-    assert lines[0].endswith("scorer=sonar (1/2 docs)")     # the mix is visible
+    assert lines[0].endswith("scorer=dense (1/2 docs)")     # the mix is visible
     assert lines[lines.index("--") + 1].startswith("plain s0:")
 
 
@@ -355,7 +355,7 @@ def test_ask_scorer_lexical_ignores_the_embeddings(emb_store):
 
 def test_ask_scorer_sonar_falls_back_with_a_note(ask_store):
     assert ask_store.ask(Q, scorer="sonar").startswith(
-        "entities: encoder, text · scorer=lexical (sonar unavailable)")
+        "entities: encoder, text · scorer=lexical (dense unavailable)")
 
 
 def test_ask_rejects_an_unknown_scorer(emb_store):
@@ -370,7 +370,7 @@ def test_ask_falls_back_to_lexical_when_the_question_cannot_be_encoded(emb_store
         raise RuntimeError("no weights")
 
     st._ex.encode_batch = boom
-    assert "· scorer=lexical (sonar unavailable)" in st.ask(Q, scorer="sonar")
+    assert "· scorer=lexical (dense unavailable)" in st.ask(Q, scorer="sonar")
 
 
 def test_ingest_tolerates_an_encoder_that_raises(fake_extractor):
@@ -415,7 +415,7 @@ def test_missing_sidecar_leaves_the_store_lexical(tmp_path, fake_extractor, emb_
     back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
     back.load()
     assert back.emb == {}
-    assert "· scorer=lexical (sonar unavailable)" in back.ask(Q, scorer="sonar")
+    assert "· scorer=lexical (dense unavailable)" in back.ask(Q, scorer="sonar")
 
 
 def test_corrupt_sidecar_is_tolerated(tmp_path, fake_extractor, emb_store):
@@ -450,7 +450,7 @@ def test_sidecar_with_a_one_dimensional_matrix_is_rejected(tmp_path, fake_extrac
     back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
     back.load()
     assert back.emb == {}
-    assert "· scorer=lexical (sonar unavailable)" in back.ask(Q, scorer="sonar")
+    assert "· scorer=lexical (dense unavailable)" in back.ask(Q, scorer="sonar")
 
 
 def test_sidecar_with_a_non_float_matrix_is_rejected(tmp_path, fake_extractor, emb_store):
@@ -680,7 +680,7 @@ def test_sidecar_is_dropped_when_the_document_text_changed_under_it(
     back = GraphStore(extractor=fake_extractor(ASK_TRIPLES), path=path)
     back.load()
     assert back.emb == {}
-    assert "· scorer=lexical (sonar unavailable)" in back.ask(Q, scorer="sonar")
+    assert "· scorer=lexical (dense unavailable)" in back.ask(Q, scorer="sonar")
 
 
 # -- the store only stores embeddings it can rank with --------------------------------
@@ -712,3 +712,9 @@ def test_store_keeps_embeddings_the_extractor_vouches_for(fake_extractor):
     st = GraphStore(extractor=ex)
     st.ingest_text(ASK_DOC, "t")
     assert st.emb["t"].shape == (3, 8)
+
+
+def test_dense_constants_keep_their_older_names():
+    from cogito_estella.mcp import store as S
+    assert (S.SONAR_COS_FLOOR, S.SONAR_FLOOR, S.SONAR_OFFSET) == (S.DENSE_COS_FLOOR, S.DENSE_FLOOR, S.DENSE_OFFSET)
+    assert S.SCORER_ALIASES == {"sonar": "dense"} and "dense" in S.ASK_SCORERS

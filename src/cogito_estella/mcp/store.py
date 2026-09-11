@@ -25,11 +25,13 @@ DIVIDER = "~ class-only, verify with provenance:"
 FACT_SHARE = 0.4                # of `ask`'s budget; the sentences take the rest
 ASK_ENTITIES = 3                # entities resolved from one question
 ASK_MAX_SKIPS = 32              # consecutive oversize sentences before the fill stops
-ASK_SCORERS = ("lexical", "sonar")                  # the scorer contract of `ask`
+ASK_SCORERS = ("lexical", "dense")                  # the scorer contract of `ask`
+SCORER_ALIASES = {"sonar": "dense"}                 # older name of the dense ranking
 ASK_MAX_IDS = 8                 # ids per fact line in `ask`: one hub group must not eat the cap
-SONAR_COS_FLOOR = 0.2           # below this cosine a sentence is not about the question
-SONAR_FLOOR = (SONAR_COS_FLOOR + 1.0) / 2.0        # the same floor on the scorer's [0, 1] scale
-SONAR_OFFSET = 1.0              # embedded rows rank above lexical ones: no shared origin
+DENSE_COS_FLOOR = 0.2           # below this cosine a sentence is not about the question
+DENSE_FLOOR = (DENSE_COS_FLOOR + 1.0) / 2.0        # the same floor on the scorer's [0, 1] scale
+DENSE_OFFSET = 1.0              # embedded rows rank above lexical ones: no shared origin
+SONAR_COS_FLOOR, SONAR_FLOOR, SONAR_OFFSET = DENSE_COS_FLOOR, DENSE_FLOOR, DENSE_OFFSET   # older names
 # question words too generic to be worth a graph hop
 _GENERIC = ("model models paper use uses used result results work approach method "
             "methods data table figure")
@@ -423,8 +425,9 @@ class GraphStore:
 
     def ask(self, question: str, budget: int = 600, scorer: str = "lexical") -> str:
         """One call from a question to the facts and sentences that answer it, within budget.
-        IDF is the primary engine; `sonar` ranks the sentence block only when asked for."""
+        IDF is the primary engine; `dense` (older name `sonar`) ranks the sentence block only when asked for."""
         requested = str(scorer).strip().lower()
+        requested = SCORER_ALIASES.get(requested, requested)
         if requested not in ASK_SCORERS:           # a stray value must not pick a scorer by luck
             raise ValueError(f"unknown scorer {str(scorer).strip()[:24]!r}; "
                              f"use one of: {', '.join(ASK_SCORERS)}")
@@ -464,7 +467,7 @@ class GraphStore:
         strictly after them: (cos + 1) / 2 floors near 0.5 while an overlap-free sentence
         scores 0, so the two scales must never be compared row by row."""
         lexical = lex.score(question, boost)
-        note = "lexical (sonar unavailable)"
+        note = "lexical (dense unavailable)"
         if requested == "lexical" or not lex.n:
             return lexical, "lexical"
         if mat is None:
@@ -482,8 +485,8 @@ class GraphStore:
             if not mask[i]:
                 out.append(lexical[i])
             else:                                  # the floor keeps `no material` reachable
-                out.append(SONAR_OFFSET + sonar[i] if sonar[i] >= SONAR_FLOOR else 0.0)
-        return out, f"sonar{cover}"
+                out.append(DENSE_OFFSET + sonar[i] if sonar[i] >= DENSE_FLOOR else 0.0)
+        return out, f"dense{cover}"
 
     @staticmethod
     def _fit(block: list, lines: list, cap: int) -> list:

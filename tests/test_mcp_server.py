@@ -90,7 +90,7 @@ def test_ask_clamps_the_budget(tools, monkeypatch):
 
 def test_ask_use_sonar_without_embeddings_falls_back_with_a_note(tools):
     tools.ingest(DOC)
-    assert "scorer=lexical (sonar unavailable)" in tools.ask("sonar decoder", use_sonar=True)
+    assert "scorer=lexical (dense unavailable)" in tools.ask("sonar decoder", use_sonar=True)
 
 
 def test_ask_ranks_lexically_by_default(tools):
@@ -105,7 +105,7 @@ def test_ask_maps_the_toggle_to_the_store_scorer(tools, monkeypatch):
                         lambda q, budget, scorer: seen.append(scorer) or "ok")
     tools.ask("q")
     tools.ask("q", use_sonar=True)
-    assert seen == ["lexical", "sonar"]
+    assert seen == ["lexical", "dense"]
 
 
 def test_instructions_route_every_question_to_ask():
@@ -368,3 +368,11 @@ def test_build_extractor_stops_the_server_on_an_encoder_mismatch(monkeypatch, wh
     with pytest.raises(SystemExit) as exc:
         build_extractor(_resolved(["a.pt"]), parse_args(["--encoder", "bge-m3"]))
     assert "trained on sonar" in str(exc.value) and str(exc.value).startswith("cogito-mcp:")
+
+
+def test_ask_use_dense_and_the_older_toggle_select_the_same_scorer(tools, monkeypatch):
+    seen = []
+    monkeypatch.setattr(tools.store, "ask", lambda q, budget=600, scorer="lexical": seen.append(scorer) or "")
+    tools.ask("q", use_dense=True)
+    tools.ask("q", use_sonar=True)
+    assert seen == ["dense", "dense"]

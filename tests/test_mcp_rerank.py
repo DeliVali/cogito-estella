@@ -15,6 +15,7 @@ from cogito_estella.mcp.rerank import (
     RelevanceScorer,
     bigrams,
     bm25_scores,
+    corpus_avgdl,
     featurize,
     is_quantity_question,
     load_default,
@@ -265,6 +266,43 @@ def test_bm25_survives_an_empty_document():
     assert np.isfinite(bm25_scores([[], ["a"]], {"a": 1.0}, ["a"])).all()
 
 
+def test_corpus_avgdl_is_the_mean_token_length():
+    assert corpus_avgdl([["a"], ["a", "b", "c"]]) == pytest.approx(2.0)
+    assert corpus_avgdl([]) == pytest.approx(1.0)
+
+
+def test_bm25_defaults_to_the_mean_length_of_the_sentences_given():
+    docs = [["a"], ["a", "b", "c", "d"]]
+    assert bm25_scores(docs, {"a": 1.0}, ["a"]) \
+        == pytest.approx(bm25_scores(docs, {"a": 1.0}, ["a"], avgdl=corpus_avgdl(docs)))
+
+
+def test_bm25_length_normalizer_is_the_scale_of_the_column():
+    docs = [["a"], ["a", "b", "c", "d"]]
+    short = bm25_scores(docs, {"a": 1.0}, ["a"], avgdl=2.0)
+    long = bm25_scores(docs, {"a": 1.0}, ["a"], avgdl=50.0)
+    assert short != pytest.approx(long)
+
+
+def test_bm25_on_a_subset_matches_the_universe_when_the_normalizer_is_pinned():
+    """The defect the parameter closes: scoring candidates alone silently rescales the
+    column unless the universe's normalizer travels with the query."""
+    universe = [["a"], ["a", "b"], ["a"] * 9, ["c"] * 40, ["d"] * 30]
+    idf, q = {"a": 1.0}, ["a"]
+    full = bm25_scores(universe, idf, q)
+    subset = universe[:3]
+    drifted = bm25_scores(subset, idf, q)
+    pinned = bm25_scores(subset, idf, q, avgdl=corpus_avgdl(universe))
+    assert pinned == pytest.approx(full[:3])
+    assert drifted != pytest.approx(full[:3])
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan")])
+def test_bm25_rejects_a_normalizer_that_is_not_a_length(bad):
+    with pytest.raises(ValueError, match="avgdl"):
+        bm25_scores([["a"]], {"a": 1.0}, ["a"], avgdl=bad)
+
+
 # -- bigrams --------------------------------------------------------------------
 def test_bigrams_are_adjacent_token_pairs():
     assert bigrams(["a", "b", "c"]) == [("a", "b"), ("b", "c")]
@@ -317,6 +355,39 @@ def test_stronger_l2_shrinks_the_weights():
     assert np.abs(strong.w).sum() < np.abs(weak.w).sum()
 
 
+def test_fit_records_the_penalty_it_applied():
+    X, y = separable()
+    assert RelevanceScorer().fit(X, y).l2 == pytest.approx(1.0)
+    assert RelevanceScorer().fit(X, y, l2=7.5).l2 == pytest.approx(7.5)
+
+
+def test_l2_is_graded_against_the_row_count():
+    """Loss and penalty are both summed over the rows, so doubling the rows halves the
+    penalty's share: the same fit needs twice the l2. Pinning this keeps the number in
+    the weights file readable as one convention rather than two."""
+    X, y = separable()
+    doubled = np.vstack([X, X])
+    labels = np.concatenate([y, y])
+    one = RelevanceScorer().fit(X, y, l2=200.0)
+    two = RelevanceScorer().fit(doubled, labels, l2=400.0)
+    assert two.w == pytest.approx(one.w, abs=2e-3)
+    unmatched = RelevanceScorer().fit(doubled, labels, l2=200.0)
+    assert np.abs(unmatched.w).sum() > np.abs(one.w).sum()
+
+
+def test_fit_refuses_a_penalty_that_would_diverge():
+    X, y = separable()
+    with pytest.raises(ValueError, match="diverge"):
+        RelevanceScorer().fit(X, y, l2=1e6)
+
+
+@pytest.mark.parametrize("bad", [-1.0, float("nan")])
+def test_fit_rejects_a_penalty_that_is_not_a_penalty(bad):
+    X, y = separable()
+    with pytest.raises(ValueError, match="l2"):
+        RelevanceScorer().fit(X, y, l2=bad)
+
+
 def test_fit_rejects_a_feature_count_that_is_not_the_contract():
     with pytest.raises(ValueError, match="features"):
         RelevanceScorer().fit(np.zeros((4, 3)), np.zeros(4))
@@ -347,9 +418,17 @@ def test_score_before_fit_fails_loudly():
 
 
 # -- weights file ---------------------------------------------------------------
+AVGDL = 24.0
+
+
+def fitted(X, y, **kw):
+    """A fit that also pins what a stored weights file has to carry."""
+    return RelevanceScorer().fit(X, y, **kw).pin_universe(AVGDL, "fixture sentences")
+
+
 def test_json_round_trip_preserves_the_scores(tmp_path):
     X, y = separable()
-    sc = RelevanceScorer().fit(X, y)
+    sc = fitted(X, y)
     sc.trained_on = "fixture"
     sc.cv = {"learned_recall_at_budget": 0.9, "lexical_recall_at_budget": 0.8, "folds": []}
     path = tmp_path / "w.json"
@@ -361,7 +440,7 @@ def test_json_round_trip_preserves_the_scores(tmp_path):
 
 def test_to_json_serializes_array_scalars_left_in_the_report(tmp_path):
     X, y = separable()
-    sc = RelevanceScorer().fit(X, y)
+    sc = fitted(X, y)
     sc.cv = {"learned_recall_at_budget": np.float64(0.9),
              "folds": [{"fold": np.int64(2), "learned": np.float32(0.5)}]}
     path = tmp_path / "w.json"
@@ -374,17 +453,67 @@ def test_to_json_serializes_array_scalars_left_in_the_report(tmp_path):
 def test_weights_file_holds_the_documented_keys(tmp_path):
     X, y = separable()
     path = tmp_path / "w.json"
-    RelevanceScorer().fit(X, y).to_json(path)
+    fitted(X, y).to_json(path)
     blob = json.loads(path.read_text())
-    assert set(blob) >= {"features", "mean", "std", "w", "b", "trained_on", "cv"}
+    assert set(blob) >= {"features", "mean", "std", "w", "b", "trained_on", "cv",
+                         "l2", "bm25_avgdl", "bm25_universe"}
     assert blob["features"] == list(FEATURES)
     assert len(blob["mean"]) == len(blob["std"]) == len(blob["w"]) == 12
+
+
+def test_weights_file_records_the_penalty_and_the_ranking_universe(tmp_path):
+    X, y = separable()
+    path = tmp_path / "w.json"
+    fitted(X, y, l2=3.0).to_json(path)
+    blob = json.loads(path.read_text())
+    assert blob["l2"] == pytest.approx(3.0)
+    assert blob["bm25_avgdl"] == pytest.approx(AVGDL)
+    assert blob["bm25_universe"] == "fixture sentences"
+    back = RelevanceScorer.from_json(path)
+    assert back.l2 == pytest.approx(3.0) and back.bm25_avgdl == pytest.approx(AVGDL)
+    assert back.bm25_universe == "fixture sentences"
+
+
+def test_to_json_refuses_weights_that_do_not_pin_the_universe(tmp_path):
+    X, y = separable()
+    with pytest.raises(ValueError, match="normalizer"):
+        RelevanceScorer().fit(X, y).to_json(tmp_path / "w.json")
+
+
+@pytest.mark.parametrize("key, message", [("bm25_avgdl", "normalizer"), ("l2", "penalty")])
+def test_from_json_rejects_a_file_that_pins_neither_convention(tmp_path, key, message):
+    X, y = separable()
+    path = tmp_path / "w.json"
+    fitted(X, y).to_json(path)
+    blob = json.loads(path.read_text())
+    del blob[key]
+    path.write_text(json.dumps(blob))
+    with pytest.raises(ValueError, match=message):
+        RelevanceScorer.from_json(path)
+
+
+def test_from_json_rejects_a_normalizer_that_is_not_a_length(tmp_path):
+    X, y = separable()
+    path = tmp_path / "w.json"
+    fitted(X, y).to_json(path)
+    blob = json.loads(path.read_text())
+    blob["bm25_avgdl"] = 0.0
+    path.write_text(json.dumps(blob))
+    with pytest.raises(ValueError, match="normalizer"):
+        RelevanceScorer.from_json(path)
+
+
+@pytest.mark.parametrize("bad", [0.0, -3.0, float("nan")])
+def test_pin_universe_rejects_a_normalizer_that_is_not_a_length(bad):
+    X, y = separable()
+    with pytest.raises(ValueError, match="normalizer"):
+        RelevanceScorer().fit(X, y).pin_universe(bad)
 
 
 def test_from_json_rejects_other_feature_names(tmp_path):
     X, y = separable()
     path = tmp_path / "w.json"
-    RelevanceScorer().fit(X, y).to_json(path)
+    fitted(X, y).to_json(path)
     blob = json.loads(path.read_text())
     blob["features"][0] = "something_else"
     path.write_text(json.dumps(blob))
@@ -395,7 +524,7 @@ def test_from_json_rejects_other_feature_names(tmp_path):
 def test_from_json_rejects_a_truncated_vector(tmp_path):
     X, y = separable()
     path = tmp_path / "w.json"
-    RelevanceScorer().fit(X, y).to_json(path)
+    fitted(X, y).to_json(path)
     blob = json.loads(path.read_text())
     blob["w"] = blob["w"][:5]
     path.write_text(json.dumps(blob))
@@ -427,7 +556,7 @@ def test_load_default_returns_none_when_the_file_is_absent(tmp_path, monkeypatch
 def test_load_default_reads_the_file_named_by_the_environment(tmp_path, monkeypatch):
     X, y = separable()
     path = tmp_path / "w.json"
-    sc = RelevanceScorer().fit(X, y)
+    sc = fitted(X, y)
     sc.to_json(path)
     monkeypatch.setenv(WEIGHTS_ENV, str(path))
     loaded = load_default()
@@ -442,10 +571,22 @@ def test_load_default_returns_none_on_a_defective_file(tmp_path, monkeypatch, ca
     assert "rerank" in capsys.readouterr().err
 
 
+def test_load_default_returns_none_when_the_universe_is_not_pinned(tmp_path, monkeypatch, capsys):
+    X, y = separable()
+    path = tmp_path / "w.json"
+    fitted(X, y).to_json(path)
+    blob = json.loads(path.read_text())
+    del blob["bm25_avgdl"]
+    path.write_text(json.dumps(blob))
+    monkeypatch.setenv(WEIGHTS_ENV, str(path))
+    assert load_default() is None
+    assert "rerank" in capsys.readouterr().err
+
+
 def test_load_default_returns_none_on_a_file_with_other_features(tmp_path, monkeypatch):
     X, y = separable()
     path = tmp_path / "w.json"
-    RelevanceScorer().fit(X, y).to_json(path)
+    fitted(X, y).to_json(path)
     blob = json.loads(path.read_text())
     blob["features"] = list(FEATURES)[:11]
     path.write_text(json.dumps(blob))

@@ -46,17 +46,26 @@ def _idf_fn(idf) -> Callable[[str], float]:
     return lambda t: float(idf(t))
 
 
+def corpus_avgdl(sentences_tokens: Sequence[Sequence[str]]) -> float:
+    """Mean token length of a sentence universe: the divisor BM25 normalizes lengths by."""
+    lengths = [len(s) for s in sentences_tokens]
+    return (sum(lengths) / len(lengths)) if lengths else 1.0
+
+
 def bm25_scores(store_sentences_tokens: Sequence[Sequence[str]], idf, q_tokens: Sequence[str],
-                k1: float = BM25_K1, b: float = BM25_B) -> np.ndarray:
-    """Okapi BM25 of one query against tokenized sentences; length normalization uses the
-    mean length of the sentences given, so the caller fixes the universe."""
+                k1: float = BM25_K1, b: float = BM25_B,
+                avgdl: float | None = None) -> np.ndarray:
+    """Okapi BM25 of one query against tokenized sentences. `avgdl` is the length
+    normalizer; a different divisor rescales the whole column, so fit and query time must
+    pass the same value. Omitted, it is the mean length of the sentences given."""
     n = len(store_sentences_tokens)
     out = np.zeros(n, dtype=float)
     q = list(dict.fromkeys(q_tokens))               # a repeated query token weighs once
+    avgdl = corpus_avgdl(store_sentences_tokens) if avgdl is None else float(avgdl)
+    if not math.isfinite(avgdl) or avgdl <= 0:
+        raise ValueError("avgdl must be a positive finite mean length")
     if not n or not q:
         return out
-    lengths = np.asarray([len(s) for s in store_sentences_tokens], dtype=float)
-    avgdl = float(lengths.mean()) or 1.0
     weight = _idf_fn(idf)
     for i, toks in enumerate(store_sentences_tokens):
         if not toks:
@@ -179,6 +188,9 @@ class RelevanceScorer:
     features: tuple[str, ...] = FEATURES
     trained_on: str = ""
     cv: dict = field(default_factory=dict)
+    l2: float | None = None                         # the penalty actually applied by `fit`
+    bm25_avgdl: float | None = None                 # length normalizer of the ranking column
+    bm25_universe: str = ""
 
     def fit(self, X, y, l2: float = 1.0, steps: int = 2000, lr: float = 0.1):
         X = np.asarray(X, dtype=float)
@@ -194,13 +206,20 @@ class RelevanceScorer:
         self.std = std
         Z = (X - self.mean) / self.std
         n = max(X.shape[0], 1)
+        if not math.isfinite(l2) or l2 < 0:
+            raise ValueError("l2 must be a finite non-negative penalty")
+        if lr * l2 / n >= 1.0:                      # the per-step shrink must stay under 1
+            raise ValueError("l2 too large for this step size and row count: the fit would diverge")
         w = np.zeros(X.shape[1], dtype=float)
         b = 0.0
         for _ in range(int(steps)):
             err = _sigmoid(Z @ w + b) - y
+            # penalty and loss are both summed over the rows before the /n, so l2 grades the
+            # fit against the row count: its strength has to be picked by measurement, not assumed
             w -= lr * (Z.T @ err / n + l2 * w / n)
             b -= lr * float(err.mean())
         self.w, self.b = w, float(b)
+        self.l2 = float(l2)
         return self
 
     def score(self, X) -> np.ndarray:
@@ -214,8 +233,16 @@ class RelevanceScorer:
     def predict_proba(self, X) -> np.ndarray:
         return _sigmoid(self.score(X))
 
-    def validate(self):
-        """Every defect that would silently mis-rank is fatal here instead."""
+    def pin_universe(self, avgdl: float, label: str = ""):
+        """Record the length normalizer the ranking column was fitted against; the query path
+        hands the same value back to `bm25_scores`, so neither side can drift."""
+        self.bm25_avgdl = float(avgdl)
+        self.bm25_universe = str(label)
+        return self.validate()
+
+    def validate(self, *, shipped: bool = False):
+        """Every defect that would silently mis-rank is fatal here instead. `shipped` adds what
+        a stored file must pin, so the fit and the query path cannot disagree about them."""
         if list(self.features) != list(FEATURES):
             raise ValueError("weights carry other feature names than the current contract")
         vectors = {"w": self.w, "mean": self.mean, "std": self.std}
@@ -227,15 +254,25 @@ class RelevanceScorer:
             raise ValueError("weights hold a non-finite value")
         if float(np.asarray(self.std, dtype=float).min()) < MIN_SCALE:
             raise ValueError("a feature scale is zero; standardizing would not be defined")
+        if self.bm25_avgdl is not None and not (math.isfinite(float(self.bm25_avgdl))
+                                                and float(self.bm25_avgdl) > 0):
+            raise ValueError("the pinned length normalizer is not a positive finite value")
+        if shipped:
+            if self.l2 is None or not math.isfinite(float(self.l2)) or float(self.l2) < 0:
+                raise ValueError("weights do not record the penalty they were fitted with")
+            if self.bm25_avgdl is None:
+                raise ValueError("weights do not pin the length normalizer of the ranking column")
         return self
 
     def to_json(self, path) -> Path:
-        self.validate()
+        self.validate(shipped=True)
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         blob = {"features": list(self.features), "mean": np.asarray(self.mean).tolist(),
                 "std": np.asarray(self.std).tolist(), "w": np.asarray(self.w).tolist(),
-                "b": float(self.b), "trained_on": self.trained_on, "cv": self.cv}
+                "b": float(self.b), "trained_on": self.trained_on, "cv": self.cv,
+                "l2": float(self.l2), "bm25_avgdl": float(self.bm25_avgdl),
+                "bm25_universe": self.bm25_universe}
         path.write_text(json.dumps(blob, indent=2, default=_plain) + "\n", encoding="utf-8")
         return path
 
@@ -248,8 +285,11 @@ class RelevanceScorer:
                  std=np.asarray(blob.get("std", []), dtype=float),
                  features=tuple(blob.get("features", ())),
                  trained_on=str(blob.get("trained_on", "")),
-                 cv=blob.get("cv") or {})
-        return sc.validate()
+                 cv=blob.get("cv") or {},
+                 l2=None if blob.get("l2") is None else float(blob["l2"]),
+                 bm25_avgdl=None if blob.get("bm25_avgdl") is None else float(blob["bm25_avgdl"]),
+                 bm25_universe=str(blob.get("bm25_universe", "")))
+        return sc.validate(shipped=True)
 
 
 def default_weights_path() -> Path:

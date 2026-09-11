@@ -318,7 +318,7 @@ wheels = [
 
 [[package]]
 name = "cogito-estella"
-version = "0.15.0"
+version = "0.16.0"
 source = { editable = "." }
 dependencies = [
     { name = "networkx" },
@@ -338,11 +338,11 @@ graph = [
 mcp = [
     { name = "huggingface-hub" },
     { name = "mcp" },
+    { name = "safetensors" },
     { name = "sentencepiece" },
-    { name = "sonar-space" },
     { name = "spacy" },
     { name = "tiktoken" },
-    { name = "wtpsplit" },
+    { name = "transformers" },
 ]
 pdf = [
     { name = "pypdf" },
@@ -368,14 +368,14 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pypdf", marker = "extra == 'pdf'", specifier = ">=4" },
     { name = "sacrebleu", marker = "extra == 'data'", specifier = ">=2.4" },
+    { name = "safetensors", marker = "extra == 'mcp'", specifier = ">=0.4" },
     { name = "sentencepiece", marker = "extra == 'mcp'", specifier = ">=0.2" },
-    { name = "sonar-space", marker = "extra == 'mcp'", specifier = ">=0.5.0" },
     { name = "sonar-space", marker = "extra == 'sonar'", specifier = ">=0.5.0" },
     { name = "spacy", marker = "extra == 'mcp'", specifier = ">=3.8" },
     { name = "tiktoken", marker = "extra == 'mcp'", specifier = ">=0.7" },
     { name = "torch", specifier = ">=2.7" },
     { name = "tqdm", marker = "extra == 'data'", specifier = ">=4.66" },
-    { name = "wtpsplit", marker = "extra == 'mcp'", specifier = ">=2.1" },
+    { name = "transformers", marker = "extra == 'mcp'", specifier = ">=4.57,<5" },
     { name = "wtpsplit", marker = "extra == 'sonar'", specifier = ">=2.1" },
 ]
 provides-extras = ["sonar", "data", "graph", "mcp", "pdf"]

@@ -1,4 +1,4 @@
-# Cogito Estella: Latent Graph Engine (v0.15.0)
+# Cogito Estella: Latent Graph Engine (v0.16.0)
 
 Non-autoregressive inference backend that decodes SONAR (Meta) semantic embeddings
 directly into knowledge graphs, bypassing token-based text decoding entirely.
@@ -123,6 +123,14 @@ pip install "cogito-estella[mcp]"          # add [pdf] for PDF input
 python -m spacy download en_core_web_sm    # done automatically on first run unless --no-download
 ```
 
+The server runs on the **`m2m100-pool`** encoder by default: Meta's frozen M2M-100 418M
+encoder (MIT) under a learned attention pooling trained here. Pooling and decoder heads
+are Apache-2.0 and download from Hugging Face on first run — no non-commercial term
+anywhere in the default path. The SONAR encoder stays available for research
+(`pip install "cogito-estella[sonar]"`, `--encoder sonar`) and keeps its CC-BY-NC 4.0
+terms at runtime; SONAR-era checkpoints without encoder metadata still resolve to SONAR,
+so 0.15.0 setups keep working unchanged.
+
 Client configuration (Claude Code `.mcp.json`, Cursor, etc.):
 
 ```json
@@ -155,10 +163,16 @@ introduces facts that only carry a coarse class label — check those with `prov
 before relying on them. The graph lives in `<dir>/graph.json` (sentence embeddings in
 `<dir>/graph.emb.npz`) and survives restarts.
 
-Weights: by default the ontology ensemble (`cogito-prose-ontology*.pt` + `vocab-onto.json`)
-is downloaded from Hugging Face on first run; pass `--checkpoint` (repeatable) and
-`--vocab` to use other files, `--device` to force `cuda`/`cpu` (default: auto-detect),
-`--no-download` to fail fast offline.
+Weights: the manifest `encoders.json` in the Hugging Face repository maps each encoder to
+its published assets, and the default encoder resolves to the m2m100-pool ontology
+ensemble (`cogito-prose-ontology-m2mpool{,-s2,-s3}.safetensors` + `vocab-onto-m2mpool.json`
++ `pool.safetensors`, subfolder `m2m100-pool`). Pass `--encoder sonar` for the SONAR-era
+ensemble at the repository root, `--checkpoint` (repeatable) and `--vocab` to use local
+files, `--pool` for local pooling weights (env `COGITO_POOL`), `--device` to force
+`cuda`/`cpu` (default: auto-detect), `--no-download` to fail fast offline. Checkpoints
+carry their encoder, width and normalization; a checkpoint decoded in the wrong semantic
+space stops the server instead of emitting triples, and a startup canary re-checks the
+encoder itself against shipped reference cosines.
 
 The graph directory (`.cogito/` by default) holds your ingested documents; add it to
 your project's `.gitignore` rather than committing it.
@@ -214,7 +228,8 @@ Champion checkpoints ship via [GitHub Releases](../../releases) and
 | `cogito-prose-candidates-{ft,cal,base,s2,s3}.pt` | entity-conditioned prose (5-seed ensemble) | 0.827 |
 | `cogito-prose-openvocab{,-s4,-s5}.pt` + `cogito-prose-cascade-fallback.pt` | open-vocab prose stack | 0.6514 |
 | `vocab-prose.json` | entity/relation vocabulary (20k/60) | — |
-| `cogito-prose-ontology{,-s2,-s3}.pt` + `vocab-onto.json` | ontology ensemble ×3, 76 relations | 0.796 @ 91 % coverage — default for `cogito-mcp` |
+| `cogito-prose-ontology{,-s2,-s3}.pt` + `vocab-onto.json` | ontology ensemble ×3, 76 relations (SONAR) | 0.796 @ 91 % coverage |
+| `m2m100-pool/cogito-prose-ontology-m2mpool{,-s2,-s3}.safetensors` + `vocab-onto-m2mpool.json` + `pool.safetensors` | ontology ensemble ×3, 76 relations (M2M-100 + learned pooling) | 0.784 @ 91 % coverage — default for `cogito-mcp`, fully permissive |
 
 ```bash
 pip install "cogito-estella[sonar]"     # or: uv sync (from a clone)
@@ -239,9 +254,11 @@ embedding: `extract_with_literals` detects them deterministically in the source 
 query, guaranteed by copying rather than decoding.
 
 **Weight licensing:** all from-scratch decoder heads (GraphDecoder,
-CandidateGraphDecoder, trunks, ensembles) are Apache-2.0. The code-modality LoRA
-adapters modify Meta's SONAR encoder, whose weights are distributed under
-CC-BY-NC 4.0 — the adapted encoder inherits those non-commercial terms.
+CandidateGraphDecoder, trunks, ensembles) and the learned attention pooling are
+Apache-2.0; the `m2m100-pool` encoder they run on is Meta's M2M-100 418M, MIT. The
+SONAR-space assets (the SONAR encoder itself, the SONAR-era ensembles decoded in its
+space, and the code-modality LoRA adapters that modify it) inherit SONAR's CC-BY-NC 4.0
+non-commercial terms.
 
 ---
 
@@ -275,7 +292,7 @@ src/cogito_estella/
 ```
 
 Training data, experiment scaffolding, and logs are untracked; the unit-test suite
-ships with the repository — **113 tests**, fully reproducible offline:
+ships with the repository — **427 tests**, fully reproducible offline:
 
 ```bash
 uv sync

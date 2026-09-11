@@ -2,6 +2,22 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.16.0] - 2026-09-11
+
+### Added
+- **`m2m100-pool` is the default encoder** (`DEFAULT_ENCODER`): Meta's frozen M2M-100 418M encoder (MIT, revision `55c2e61b`) under the learned attention pooling trained here. The default `cogito-mcp` path carries no non-commercial term; SONAR moves to the `[sonar]` extra (research, CC-BY-NC 4.0 at runtime). Ontology ensemble ×3 at held-out Triple F1 0.784 vs 0.796 for the SONAR ensemble on the same 2,500-row protocol (0.98×).
+- **Encoder-aware weight resolution** (`cogito_estella.mcp.weights`): `ENCODER_ASSETS` maps each encoder to its published checkpoints, vocabulary, pooling weights and repository subfolder, overridable by the manifest `encoders.json` in the Hugging Face repository (files, revision, dim, normalize, operating point, licence). `resolve(...) -> ResolvedWeights(checkpoints, vocab, pool, encoder)`; explicit paths still win and must all exist; every error names the encoder. An absent manifest falls back to the built-in table, a corrupt one is a defect.
+- **safetensors release format**: checkpoints and pooling ship as `.safetensors` with their contract (encoder, encoder revision, dim, normalize, vocab and pool sha256, F1, step) in a JSON sidecar and in the file header; both loaders still read `.pt`. Round-trip verified bit-exact (max weight deviation 0, max logit deviation 0 on three fixture embeddings) and end to end (identical triples through the real encoder).
+- **Per-encoder operating point** (`ENSEMBLE_OPERATING_POINT`): the extractor's ensemble thresholds follow the encoder that was swept — (0.1, 0.8) for sonar, (0.1, 0.7) for m2m100-pool — instead of one hard-coded pair. A single model keeps (0.15, 0.15).
+- `--pool` and the resolved pooling weights are threaded from the server to the encoder; the startup line names the graph, the encoder and its revision.
+
+### Changed
+- `[mcp]` extra: `transformers>=4.57,<5` and `safetensors` replace `sonar-space`/`wtpsplit`, which stay in `[sonar]`.
+- Checkpoints without encoder metadata are resolved as SONAR at the extractor boundary, whatever the process default is; an explicit `--encoder` or `COGITO_ENCODER` that disagrees still stops the load.
+
+### Fixed
+- The shipped canary reference for `m2m100-pool` was baselined on the exp058 probe pooling, not the released exp059 pooling (cosine deviation 0.0704 > tolerance 0.02): the startup canary would have refused the released weights. Re-baselined on the shipped pool (`pool:532d9ffa1a6d`).
+
 ## [0.15.0] - 2026-09-09
 
 ### Added

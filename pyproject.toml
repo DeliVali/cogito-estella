@@ -1,6 +1,6 @@
 [project]
 name = "cogito-estella"
-version = "0.15.0"
+version = "0.16.0"
 description = "Cogito Estella — Latent Graph Engine: non-autoregressive concept-to-knowledge-graph decoding in the SONAR space"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -27,11 +27,11 @@ graph = [
 mcp = [
     "mcp>=2.1",
     "spacy>=3.8",
-    "sonar-space>=0.5.0",
-    "wtpsplit>=2.1",
     "tiktoken>=0.7",
     "huggingface-hub>=0.23",
     "sentencepiece>=0.2",
+    "transformers>=4.57,<5",
+    "safetensors>=0.4",
 ]
 pdf = [
     "pypdf>=4",

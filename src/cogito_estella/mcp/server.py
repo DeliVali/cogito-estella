@@ -3,11 +3,12 @@ go deeper with query/provenance/search. Every tool reply is charged to the token
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
 
-from cogito_estella.mcp.store import GraphStore
+from cogito_estella.mcp.store import ASK_SCORERS, GraphStore
 from cogito_estella.mcp.weights import WeightsError, ensure_spacy_model, resolve
 
 INSTRUCTIONS = ("Knowledge-graph memory over documents. `ingest` a file, directory or text "
@@ -17,6 +18,21 @@ INSTRUCTIONS = ("Knowledge-graph memory over documents. `ingest` a file, directo
                 "under the '~ class-only' divider need `provenance` before you rely on them.")
 
 ASK_BUDGET_MIN, ASK_BUDGET_MAX = 100, 4000
+DEFAULT_SCORER = "lexical"        # what `ask` ranks with when the operator sets nothing
+SCORER_ENV = "COGITO_ASK_SCORER"
+
+
+def resolve_scorer(value: str | None = None) -> str:
+    """The configured scorer. An unreadable setting is refused rather than ignored: a typo
+    would otherwise be served, and measured, as the scorer it was meant to replace."""
+    raw = os.environ.get(SCORER_ENV, "") if value is None else value
+    name = (raw or "").strip().lower()
+    if not name:
+        return DEFAULT_SCORER
+    if name not in ASK_SCORERS:
+        raise ValueError(f"{SCORER_ENV}={(raw or '').strip()[:24]!r} is not a scorer; "
+                         f"use one of: {', '.join(ASK_SCORERS)}")
+    return name
 
 
 def _existing_path(value: str) -> Path | None:
@@ -33,6 +49,8 @@ class Tools:
 
     def __init__(self, store: GraphStore):
         self.store = store
+        # read once: one run must rank every question the same way
+        self.scorer = resolve_scorer()
 
     def _charge(self, tool: str, out: str) -> str:
         self.store.ledger.charge(tool, out)
@@ -40,7 +58,7 @@ class Tools:
 
     def ask(self, question: str, budget: int = 600, use_sonar: bool = False) -> str:
         budget = min(max(int(budget), ASK_BUDGET_MIN), ASK_BUDGET_MAX)
-        scorer = "sonar" if use_sonar else "lexical"
+        scorer = "sonar" if use_sonar else self.scorer
         return self._charge("ask", self.store.ask(question, budget, scorer))
 
     def ingest(self, path_or_text: str, source: str = "") -> str:

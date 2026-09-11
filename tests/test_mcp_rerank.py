@@ -1,6 +1,8 @@
-"""Learned relevance scorer: feature extraction, BM25, logistic model, weights file."""
+"""Learned relevance scorer: feature extraction, BM25, logistic model, weights file,
+and the `ask` path that re-orders with it."""
 import json
 import math
+import re
 
 import numpy as np
 import pytest
@@ -22,6 +24,8 @@ from cogito_estella.mcp.rerank import (
     load_default,
     penalty_shrink,
 )
+from cogito_estella.mcp.store import ASK_SCORERS, GraphStore
+from cogito_estella.mcp.tokens import ntok
 
 CANDS = [
     "The encoder maps 12 bytes to one patch.",
@@ -692,3 +696,203 @@ def test_from_json_rejects_an_effect_that_does_not_follow_from_the_penalty(tmp_p
     path.write_text(json.dumps(blob))
     with pytest.raises(ValueError, match="penalty"):
         RelevanceScorer.from_json(path)
+
+
+# -- ask(scorer="learned"): candidates, context, order, fallback ------------------
+LEARNED_DOC = ("The encoder maps text to a vector. "
+               "The decoder maps text to a vector. "
+               "Because the budget grew, the committee met early.")
+LEARNED_TRIPLES = {
+    "The encoder maps text to a vector.": [("encoder", "give", "text")],
+    "The decoder maps text to a vector.": [("decoder", "give", "text")],
+    "Because the budget grew, the committee met early.": [("budget", "do", "committee")],
+}
+LEARNED_Q = "What does the encoder do with text?"
+
+
+def write_weights(path, weights, b=0.0, avgdl=10.0):
+    """A shipped weights file over unit-scaled features: `weights` alone picks the order."""
+    sc = RelevanceScorer(w=np.asarray(weights, dtype=float), b=float(b),
+                         mean=np.zeros(len(FEATURES)), std=np.ones(len(FEATURES)),
+                         l2=0.0, l2_shrink=1.0, fit_rows=64, fit_lr=0.1, fit_steps=2000,
+                         bm25_avgdl=avgdl, bm25_universe="fixture")
+    return sc.to_json(path)
+
+
+def only(name, value=1.0):
+    w = np.zeros(len(FEATURES))
+    w[FEATURES.index(name)] = value
+    return w
+
+
+def col(X, name):
+    return X[:, FEATURES.index(name)]
+
+
+def unit_vectors(texts, lang="eng_Latn", dim=8):
+    """Deterministic normalized bag-of-words vectors: a stand-in for a sentence encoder."""
+    rows = []
+    for t in texts:
+        v = np.zeros(dim, dtype=np.float32)
+        for w in re.findall(r"[a-z]+", t.lower()):
+            v[sum(map(ord, w)) % dim] += 1.0
+        n = float(np.linalg.norm(v))
+        rows.append(v / n if n else v)
+    return np.asarray(rows, dtype=np.float16)
+
+
+@pytest.fixture
+def learned_store(fake_extractor):
+    def make(encode=None):
+        ex = fake_extractor(LEARNED_TRIPLES)
+        if encode is not None:
+            ex.encode_batch = encode
+        st = GraphStore(extractor=ex)
+        st.ingest_text(LEARNED_DOC, "t")
+        return st
+    return make
+
+
+@pytest.fixture
+def weighted(tmp_path, monkeypatch):
+    def use(weights, **over):
+        monkeypatch.setenv(WEIGHTS_ENV, str(write_weights(tmp_path / "w.json", weights, **over)))
+    return use
+
+
+def sentence_lines(reply):
+    lines = reply.split("\n")
+    return lines[lines.index("--") + 1:] if "--" in lines else []
+
+
+def test_learned_is_a_scorer_ask_accepts():
+    assert "learned" in ASK_SCORERS
+
+
+def test_ask_learned_names_itself_in_the_header(learned_store, weighted):
+    weighted(only("lex_norm"))
+    assert learned_store().ask(LEARNED_Q, scorer="learned").split("\n")[0].endswith(
+        "· scorer=learned")
+
+
+def test_ask_learned_reorders_the_sentence_block(learned_store, weighted):
+    """The lexical order is the input, not the output: a weight on a different feature moves
+    a sentence the lexical ranking put second."""
+    st = learned_store()
+    assert sentence_lines(st.ask(LEARNED_Q))[0].startswith("t s0:")
+    weighted(only("rel_pos"))
+    assert sentence_lines(st.ask(LEARNED_Q, scorer="learned"))[0].startswith("t s1:")
+
+
+def test_ask_learned_ranks_only_the_lexical_candidates(learned_store, weighted):
+    """A sentence with no overlap and no retrieved fact never reaches the model, so no weight
+    can pull it into the reply."""
+    weighted(only("rel_pos"))
+    assert "committee" not in learned_store().ask(LEARNED_Q, scorer="learned")
+
+
+def test_ask_learned_keeps_the_layout_and_the_budget(learned_store, weighted):
+    weighted(only("lex_norm"))
+    st = learned_store()
+    lines = st.ask(LEARNED_Q, scorer="learned").split("\n")
+    assert lines[0].startswith("entities: encoder, text ·") and "--" in lines
+    for budget in (20, 40, 80, 200, 600):
+        assert ntok(st.ask(LEARNED_Q, budget=budget, scorer="learned")) <= budget
+
+
+def test_ask_learned_falls_back_with_a_note_when_the_weights_are_absent(
+        learned_store, tmp_path, monkeypatch):
+    monkeypatch.setenv(WEIGHTS_ENV, str(tmp_path / "absent.json"))
+    assert learned_store().ask(LEARNED_Q, scorer="learned").startswith(
+        "entities: encoder, text · scorer=lexical (learned unavailable)")
+
+
+def test_ask_learned_falls_back_when_the_weights_file_is_unusable(
+        learned_store, tmp_path, monkeypatch):
+    path = tmp_path / "w.json"
+    path.write_text("{ not json", encoding="utf-8")
+    monkeypatch.setenv(WEIGHTS_ENV, str(path))
+    assert "· scorer=lexical (learned unavailable)" in learned_store().ask(
+        LEARNED_Q, scorer="learned")
+
+
+def test_ask_learned_falls_back_when_nothing_is_worth_ranking(learned_store, weighted):
+    weighted(only("lex_norm"))
+    assert learned_store().ask("quantum chromodynamics", scorer="learned") == \
+        "no material for 'quantum chromodynamics'"
+
+
+def spy_features(monkeypatch):
+    """Capture the matrix the store hands the model, still running the real featurizer."""
+    from cogito_estella.mcp import store as store_mod
+    seen: dict = {}
+    real = store_mod.featurize
+
+    def spy(question, cands, ctx):
+        X = real(question, cands, ctx)
+        seen["cands"], seen["X"], seen["ctx"] = list(cands), X, ctx
+        return X
+    monkeypatch.setattr(store_mod, "featurize", spy)
+    return seen
+
+
+def test_ask_learned_fills_the_feature_context_from_the_store(
+        learned_store, weighted, monkeypatch):
+    weighted(only("lex_norm"))
+    seen = spy_features(monkeypatch)
+    learned_store().ask(LEARNED_Q, scorer="learned")
+    X = seen["X"]
+    assert len(seen["cands"]) == 2 and X.shape == (2, len(FEATURES))
+    assert seen["cands"][0].startswith("The encoder")         # candidates arrive lexically ordered
+    assert col(X, "lex_norm")[0] == pytest.approx(1.0)
+    assert col(X, "provenance").tolist() == [1.0, 1.0]        # both sentences back a retrieved fact
+    assert col(X, "rel_pos") == pytest.approx([0.0, 0.5])     # third of three sentences
+    assert col(X, "bm25_norm")[0] == pytest.approx(1.0)
+
+
+def test_ask_learned_marks_the_dense_feature_missing_without_embeddings(
+        learned_store, weighted, monkeypatch):
+    weighted(only("lex_norm"))
+    seen = spy_features(monkeypatch)
+    learned_store().ask(LEARNED_Q, scorer="learned")
+    assert col(seen["X"], "dense_missing").tolist() == [1.0, 1.0]
+    assert col(seen["X"], "dense_cos").tolist() == [0.0, 0.0]
+
+
+def test_ask_learned_uses_the_dense_feature_when_the_store_has_embeddings(
+        learned_store, weighted, monkeypatch):
+    weighted(only("lex_norm"))
+    seen = spy_features(monkeypatch)
+    learned_store(encode=unit_vectors).ask(LEARNED_Q, scorer="learned")
+    cos = col(seen["X"], "dense_cos")
+    assert col(seen["X"], "dense_missing").tolist() == [0.0, 0.0]
+    assert np.all(np.abs(cos) <= 1.0) and float(np.abs(cos).max()) > 0.0
+
+
+def test_ask_learned_marks_the_dense_feature_missing_when_the_question_will_not_encode(
+        learned_store, weighted, monkeypatch):
+    def boom(texts, lang="eng_Latn"):
+        raise RuntimeError("no encoder")
+
+    weighted(only("lex_norm"))
+    st = learned_store(encode=unit_vectors)
+    seen = spy_features(monkeypatch)
+    st._ex.encode_batch = boom
+    assert "· scorer=learned" in st.ask(LEARNED_Q, scorer="learned")
+    assert col(seen["X"], "dense_missing").tolist() == [1.0, 1.0]
+
+
+def test_ask_learned_scores_bm25_against_the_pinned_length_normalizer(
+        learned_store, weighted, monkeypatch):
+    """The ranking column is only comparable to the fitted one at the same divisor."""
+    from cogito_estella.mcp import store as store_mod
+    weighted(only("bm25_norm"), avgdl=7.5)
+    seen: dict = {}
+    real = store_mod.bm25_scores
+
+    def spy(texts, idf, q_tokens, **kw):
+        seen.update(kw)
+        return real(texts, idf, q_tokens, **kw)
+    monkeypatch.setattr(store_mod, "bm25_scores", spy)
+    learned_store().ask(LEARNED_Q, scorer="learned")
+    assert seen["avgdl"] == pytest.approx(7.5)

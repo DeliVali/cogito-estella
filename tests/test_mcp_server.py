@@ -4,7 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from cogito_estella.mcp.server import INSTRUCTIONS, Tools, build_server, parse_args
+from cogito_estella.mcp.server import (
+    DEFAULT_SCORER,
+    INSTRUCTIONS,
+    SCORER_ENV,
+    Tools,
+    build_server,
+    parse_args,
+    resolve_scorer,
+)
 from cogito_estella.mcp.store import GraphStore
 
 DOC = "The generated concepts are decoded by SONAR. The encoder maps text to a vector."
@@ -100,6 +108,41 @@ def test_ask_maps_the_toggle_to_the_store_scorer(tools, monkeypatch):
     tools.ask("q")
     tools.ask("q", use_sonar=True)
     assert seen == ["lexical", "sonar"]
+
+
+# -- the configured scorer: module default plus an operator knob -----------------------
+
+def test_the_module_default_scorer_is_lexical():
+    assert DEFAULT_SCORER == "lexical" and resolve_scorer("") == "lexical"
+
+
+def test_ask_sends_the_configured_scorer_to_the_store(fake_extractor, monkeypatch):
+    seen = []
+    monkeypatch.setenv(SCORER_ENV, "learned")
+    t = Tools(GraphStore(extractor=fake_extractor(TRIPLES)))
+    monkeypatch.setattr(t.store, "ask", lambda q, budget, scorer: seen.append(scorer) or "ok")
+    t.ask("q")
+    t.ask("q", use_sonar=True)                 # the explicit toggle still wins over the knob
+    assert seen == ["learned", "sonar"]
+
+
+def test_the_knob_is_read_once_so_one_run_cannot_change_scorer_midway(fake_extractor, monkeypatch):
+    seen = []
+    t = Tools(GraphStore(extractor=fake_extractor(TRIPLES)))
+    monkeypatch.setattr(t.store, "ask", lambda q, budget, scorer: seen.append(scorer) or "ok")
+    monkeypatch.setenv(SCORER_ENV, "learned")
+    t.ask("q")
+    assert seen == ["lexical"]
+
+
+def test_resolve_scorer_normalizes_case_and_padding():
+    assert resolve_scorer("  LEARNED \n") == "learned"
+
+
+def test_an_unknown_knob_value_is_refused_instead_of_silently_ignored(fake_extractor, monkeypatch):
+    monkeypatch.setenv(SCORER_ENV, "lexcial")
+    with pytest.raises(ValueError, match=SCORER_ENV):
+        Tools(GraphStore(extractor=fake_extractor(TRIPLES)))
 
 
 def test_instructions_route_every_question_to_ask():

@@ -260,3 +260,15 @@ def test_stdio_smoke_persists_across_restarts(tmp_path):
                               ("ask", {"question": "What does SONAR decode?"})]))
     assert "sonar decode concept" in second[0]
     assert second[1].startswith("entities: sonar") and "\n--\n" in second[1]
+
+
+def test_main_refuses_an_unreadable_scorer_knob_before_it_loads_anything(monkeypatch, tmp_path):
+    import cogito_estella.mcp.server as srv
+
+    def never(*a, **k):
+        raise AssertionError("the knob must be read before any loading")
+    monkeypatch.setenv(SCORER_ENV, "lexcial")
+    monkeypatch.setattr(srv, "resolve", never)
+    with pytest.raises(SystemExit) as exc:
+        srv.main(["--dir", str(tmp_path)])
+    assert SCORER_ENV in str(exc.value) and str(exc.value).startswith("cogito-mcp: ")

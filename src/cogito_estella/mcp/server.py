@@ -166,6 +166,10 @@ def _exit_missing_dependency(exc: ImportError) -> None:
 
 def main(argv=None) -> None:
     ns = parse_args(argv)
+    try:                                       # a knob that names no scorer stops the run here,
+        resolve_scorer()                       # before a model load makes the failure expensive
+    except ValueError as exc:
+        sys.exit(f"cogito-mcp: {exc}")
     try:
         ckpts, vocab = resolve(ns.checkpoint, ns.vocab, download=ns.download)
         ensure_spacy_model(download=ns.download)

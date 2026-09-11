@@ -24,7 +24,7 @@ from cogito_estella.mcp.rerank import (
     load_default,
     penalty_shrink,
 )
-from cogito_estella.mcp.store import ASK_SCORERS, GraphStore
+from cogito_estella.mcp.store import ASK_CANDIDATES, ASK_SCORERS, GraphStore
 from cogito_estella.mcp.tokens import ntok
 
 CANDS = [
@@ -896,3 +896,95 @@ def test_ask_learned_scores_bm25_against_the_pinned_length_normalizer(
     monkeypatch.setattr(store_mod, "bm25_scores", spy)
     learned_store().ask(LEARNED_Q, scorer="learned")
     assert seen["avgdl"] == pytest.approx(7.5)
+
+
+# -- one candidate rule for the fit path and the query path -----------------------
+WIDE_Q = "What maps text to a vector?"
+WIDE_DOC = " ".join(f"Item {i} maps text to a vector of size {i}." for i in range(150))
+
+
+@pytest.fixture
+def wide_store(fake_extractor):
+    st = GraphStore(extractor=fake_extractor({}))
+    st.ingest_text(WIDE_DOC, "w")
+    return st
+
+
+def test_ask_learned_marks_the_dense_feature_missing_when_the_widths_disagree(
+        learned_store, weighted, monkeypatch):
+    """A sidecar written by one encoder and a question encoded by another: the column is
+    unavailable, and the ranking still happens."""
+    weighted(only("lex_norm"))
+    st = learned_store(encode=unit_vectors)
+    st._ex.encode_batch = lambda texts, lang="eng_Latn": unit_vectors(texts, dim=4)
+    seen = spy_features(monkeypatch)
+    assert "· scorer=learned" in st.ask(LEARNED_Q, scorer="learned")
+    assert col(seen["X"], "dense_missing").tolist() == [1.0, 1.0]
+    assert col(seen["X"], "dense_cos").tolist() == [0.0, 0.0]
+
+
+def test_the_shortlist_grows_with_the_budget(wide_store, weighted, monkeypatch):
+    """A fixed shortlist would truncate the block at a budget the tool accepts, and compare
+    two arms at two different depths."""
+    weighted(only("lex_norm"))
+    seen = spy_features(monkeypatch)
+    wide_store.ask(WIDE_Q, scorer="learned")
+    assert len(seen["cands"]) == ASK_CANDIDATES
+    wide_store.ask(WIDE_Q, budget=4000, scorer="learned")
+    assert len(seen["cands"]) == 150                    # every sentence the lexical arm would fill
+
+
+def test_a_large_budget_fills_the_same_number_of_lines_as_the_lexical_arm(
+        wide_store, weighted):
+    weighted(only("lex_norm"))
+    learned = sentence_lines(wide_store.ask(WIDE_Q, budget=4000, scorer="learned"))
+    lexical = sentence_lines(wide_store.ask(WIDE_Q, budget=4000))
+    assert len(learned) == len(lexical) > ASK_CANDIDATES
+
+
+def test_learned_candidates_is_the_rule_the_query_path_ranks(
+        learned_store, weighted, monkeypatch):
+    """The fit path and the query path must select and describe the same rows: one helper
+    answers for both, so a drifting shortlist or a drifting column cannot go unnoticed."""
+    weighted(only("lex_norm"))
+    st = learned_store(encode=unit_vectors)
+    seen = spy_features(monkeypatch)
+    st.ask(LEARNED_Q, scorer="learned")
+    idx, texts, ctx = st.learned_candidates(LEARNED_Q, model=load_default())
+    assert texts == seen["cands"]
+    assert [st.sentence_index()[0][i] for i in idx] == texts
+    assert np.allclose(featurize(LEARNED_Q, texts, ctx), seen["X"])
+
+
+def test_learned_candidates_follows_the_budget_it_is_given(wide_store):
+    assert len(wide_store.learned_candidates(WIDE_Q)[0]) == ASK_CANDIDATES
+    assert len(wide_store.learned_candidates(WIDE_Q, budget=4000)[0]) == 150
+
+
+def test_learned_candidates_normalizes_lengths_by_the_universe_before_a_fit_exists(
+        learned_store):
+    """No weights yet: the column a fit reads is scaled by the mean length of the universe,
+    which is the number the fit then pins."""
+    st = learned_store()
+    _idx, cands, ctx = st.learned_candidates(LEARNED_Q)
+    assert np.allclose(ctx.bm25, bm25_scores([tokenize(t) for t in cands],
+                                             st._lexical_scorer().idf_of, tokenize(LEARNED_Q),
+                                             avgdl=st.sentence_avgdl()))
+
+
+def test_learned_candidates_prefers_the_normalizer_the_caller_pins(learned_store):
+    st = learned_store()
+    _idx, cands, ctx = st.learned_candidates(LEARNED_Q, avgdl=7.5)
+    assert np.allclose(ctx.bm25, bm25_scores([tokenize(t) for t in cands],
+                                             st._lexical_scorer().idf_of, tokenize(LEARNED_Q),
+                                             avgdl=7.5))
+
+
+def test_sentence_avgdl_is_the_mean_length_of_the_whole_universe(learned_store):
+    st = learned_store()
+    def mean():
+        return corpus_avgdl([tokenize(t) for t in st.sentence_index()[0]])
+
+    assert st.sentence_avgdl() == pytest.approx(mean())
+    st.ingest_text("Short.", "u")                       # the universe grew: the divisor follows
+    assert st.sentence_avgdl() == pytest.approx(mean())

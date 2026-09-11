@@ -165,12 +165,18 @@ def test_provenance_empty_string_reports_no_ids(tools):
 
 # -- finding 13: a missing optional dependency exits with an install hint ------------
 
+def _resolved(checkpoints=(), pool=None, encoder="m2m100-pool"):
+    from cogito_estella.mcp.weights import ResolvedWeights
+
+    return ResolvedWeights([Path(c) for c in checkpoints], Path("v.json"), pool, encoder)
+
+
 def test_main_missing_dependency_at_weight_resolution_exits_with_install_hint(monkeypatch, tmp_path):
     import cogito_estella.mcp.server as srv
 
     def boom(*a, **k):
         raise ImportError("No module named 'spacy'", name="spacy")
-    monkeypatch.setattr(srv, "resolve", lambda *a, **k: ([], Path("v.json")))
+    monkeypatch.setattr(srv, "resolve", lambda *a, **k: _resolved())
     monkeypatch.setattr(srv, "ensure_spacy_model", boom)
     with pytest.raises(SystemExit) as exc:
         srv.main(["--dir", str(tmp_path)])
@@ -182,12 +188,29 @@ def test_main_missing_mcp_sdk_exits_with_install_hint(monkeypatch, tmp_path):
 
     def boom(store):
         raise ImportError("No module named 'mcp'", name="mcp")
-    monkeypatch.setattr(srv, "resolve", lambda *a, **k: ([], Path("v.json")))
+    monkeypatch.setattr(srv, "resolve", lambda *a, **k: _resolved())
     monkeypatch.setattr(srv, "ensure_spacy_model", lambda **k: None)
     monkeypatch.setattr(srv, "build_server", boom)
     with pytest.raises(SystemExit) as exc:
         srv.main(["--dir", str(tmp_path)])
     assert "mcp" in str(exc.value) and "cogito-estella[mcp]" in str(exc.value)
+
+
+def test_the_startup_line_names_the_encoder_and_its_revision(monkeypatch, tmp_path, capsys):
+    """Operators must see which space the served graph is in before any tool call."""
+    import cogito_estella.mcp.server as srv
+    from cogito_estella.encoders import encoder_revision
+
+    def boom(store):
+        raise ImportError("No module named 'mcp'", name="mcp")
+    monkeypatch.setattr(srv, "resolve", lambda *a, **k: _resolved())
+    monkeypatch.setattr(srv, "ensure_spacy_model", lambda **k: None)
+    monkeypatch.setattr(srv, "build_server", boom)
+    with pytest.raises(SystemExit):
+        srv.main(["--dir", str(tmp_path)])
+    err = capsys.readouterr().err
+    rev = encoder_revision("m2m100-pool")
+    assert "encoder=m2m100-pool" in err and f"revision={rev}" in err and rev != "unknown"
 
 
 @pytest.mark.integration
@@ -252,7 +275,7 @@ def test_build_extractor_stops_the_server_when_the_pooling_weights_are_missing(m
 
     monkeypatch.setattr(lc, "CogitoGraphExtractor", Failing)
     with pytest.raises(SystemExit) as exc:
-        build_extractor([Path("a.pt")], Path("v.json"),
+        build_extractor(_resolved(["a.pt"], Path("pool.pt")),
                         parse_args(["--encoder", "m2m100-pool", "--pool", "pool.pt"]))
     assert "pooling weights not found" in str(exc.value)
 
@@ -273,11 +296,21 @@ def test_build_extractor_forwards_the_flags_and_runs_the_canary_once(monkeypatch
     monkeypatch.setattr(lc, "CogitoGraphExtractor", _StubExtractor)
     ns = parse_args(["--encoder", "bge-m3", "--no-download", "--device", "cpu",
                      "--pool", "pool.pt"])
-    ex = build_extractor([Path("a.pt")], Path("v.json"), ns)
+    ex = build_extractor(_resolved(["a.pt"], Path("pool.pt"), "bge-m3"), ns)
     assert ex.canaries == 1
     assert ex.args == {"ckpts": ["a.pt"], "vocab": "v.json", "device": "cpu",
                        "encoder": "bge-m3", "download": False,
                        "pool_path": Path("pool.pt")}
+
+
+def test_build_extractor_forwards_the_resolved_pool_not_the_flag(monkeypatch):
+    """`--pool` may be unset: the pooling weights the resolver downloaded are the ones
+    the encoder must load."""
+    import cogito_estella.integrations.llamaindex_connector as lc
+    monkeypatch.setattr(lc, "CogitoGraphExtractor", _StubExtractor)
+    ex = build_extractor(_resolved(["a.pt"], Path("hub/pool.safetensors")), parse_args([]))
+    assert ex.args["pool_path"] == Path("hub/pool.safetensors")
+    assert ex.args["encoder"] is None               # legacy checkpoints keep deciding
 
 
 @pytest.mark.parametrize("where", ["init", "canary"])
@@ -293,5 +326,5 @@ def test_build_extractor_stops_the_server_on_an_encoder_mismatch(monkeypatch, wh
 
     monkeypatch.setattr(lc, "CogitoGraphExtractor", boom if where == "init" else Failing)
     with pytest.raises(SystemExit) as exc:
-        build_extractor([Path("a.pt")], Path("v.json"), parse_args(["--encoder", "bge-m3"]))
+        build_extractor(_resolved(["a.pt"]), parse_args(["--encoder", "bge-m3"]))
     assert "trained on sonar" in str(exc.value) and str(exc.value).startswith("cogito-mcp:")

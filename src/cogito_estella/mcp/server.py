@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-from cogito_estella.encoders import ENCODERS, EncoderMismatch
+from cogito_estella.encoders import ENCODERS, EncoderMismatch, encoder_revision
 from cogito_estella.encoders.pooling import PoolWeightsError
 from cogito_estella.mcp.store import GraphStore
 from cogito_estella.mcp.weights import WeightsError, ensure_spacy_model, resolve
@@ -147,15 +147,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     return ap.parse_args(argv)
 
 
-def build_extractor(ckpts, vocab, ns: argparse.Namespace):
+def build_extractor(weights, ns: argparse.Namespace):
     """Extractor plus the startup canary. An encoder that disagrees with the
-    checkpoints stops the server instead of serving triples from the wrong space."""
+    checkpoints stops the server instead of serving triples from the wrong space.
+    `ns.encoder` (not the resolved name) is forwarded: an unset flag lets legacy
+    checkpoints keep their own encoder."""
     from cogito_estella.integrations import llamaindex_connector as connector
     try:
-        ex = connector.CogitoGraphExtractor([str(c) for c in ckpts], str(vocab),
-                                            device=ns.device, encoder=ns.encoder,
-                                            download=ns.download,
-                                            pool_path=ns.pool)
+        ex = connector.CogitoGraphExtractor(
+            [str(c) for c in weights.checkpoints], str(weights.vocab),
+            device=ns.device, encoder=ns.encoder, download=ns.download,
+            pool_path=weights.pool)
         ex.check_canary()
     except (EncoderMismatch, PoolWeightsError) as exc:
         sys.exit(f"cogito-mcp: {exc}")
@@ -170,17 +172,19 @@ def _exit_missing_dependency(exc: ImportError) -> None:
 def main(argv=None) -> None:
     ns = parse_args(argv)
     try:
-        ckpts, vocab = resolve(ns.checkpoint, ns.vocab, download=ns.download)
+        weights = resolve(ns.checkpoint, ns.vocab, download=ns.download,
+                          encoder=ns.encoder, pool=ns.pool)
         ensure_spacy_model(download=ns.download)
     except WeightsError as exc:
         sys.exit(f"cogito-mcp: {exc}")
     except ImportError as exc:
         _exit_missing_dependency(exc)
 
-    store = GraphStore(extractor_factory=lambda: build_extractor(ckpts, vocab, ns),
+    store = GraphStore(extractor_factory=lambda: build_extractor(weights, ns),
                        path=ns.dir / "graph.json")
     store.load()
-    print(f"cogito-mcp: graph {store.path} edges={len(store.edges)} docs={len(store.docs)}",
+    print(f"cogito-mcp: graph {store.path} edges={len(store.edges)} docs={len(store.docs)} "
+          f"encoder={weights.encoder} revision={encoder_revision(weights.encoder)}",
           file=sys.stderr)
     try:
         build_server(store).run("stdio")

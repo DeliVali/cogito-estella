@@ -165,10 +165,11 @@ def test_provenance_empty_string_reports_no_ids(tools):
 
 # -- finding 13: a missing optional dependency exits with an install hint ------------
 
-def _resolved(checkpoints=(), pool=None, encoder="m2m100-pool"):
+def _resolved(checkpoints=(), pool=None, encoder="m2m100-pool", point=None):
     from cogito_estella.mcp.weights import ResolvedWeights
 
-    return ResolvedWeights([Path(c) for c in checkpoints], Path("v.json"), pool, encoder)
+    return ResolvedWeights([Path(c) for c in checkpoints], Path("v.json"), pool, encoder,
+                           point)
 
 
 def test_main_missing_dependency_at_weight_resolution_exits_with_install_hint(monkeypatch, tmp_path):
@@ -211,6 +212,23 @@ def test_the_startup_line_names_the_encoder_and_its_revision(monkeypatch, tmp_pa
     err = capsys.readouterr().err
     rev = encoder_revision("m2m100-pool")
     assert "encoder=m2m100-pool" in err and f"revision={rev}" in err and rev != "unknown"
+
+
+def test_the_startup_line_does_not_guess_the_encoder_of_explicit_checkpoints(
+        monkeypatch, tmp_path, capsys):
+    """Legacy `.pt` paths resolve to sonar inside the extractor: announcing the process
+    default here would name the wrong semantic space."""
+    import cogito_estella.mcp.server as srv
+
+    def boom(store):
+        raise ImportError("No module named 'mcp'", name="mcp")
+    monkeypatch.setattr(srv, "resolve", lambda *a, **k: _resolved(["a.pt"], encoder=None))
+    monkeypatch.setattr(srv, "ensure_spacy_model", lambda **k: None)
+    monkeypatch.setattr(srv, "build_server", boom)
+    with pytest.raises(SystemExit):
+        srv.main(["--dir", str(tmp_path), "--checkpoint", "a.pt", "--vocab", "v.json"])
+    err = capsys.readouterr().err
+    assert "encoder=m2m100-pool" not in err and "encoder=from-checkpoints" in err
 
 
 @pytest.mark.integration
@@ -281,10 +299,13 @@ def test_build_extractor_stops_the_server_when_the_pooling_weights_are_missing(m
 
 
 class _StubExtractor:
+    encoder_name = "sonar"
+
     def __init__(self, ckpts, vocab, device=None, encoder=None, download=True,
-                 pool_path=None):
+                 pool_path=None, threshold=None, adj_threshold=None):
         self.args = {"ckpts": ckpts, "vocab": vocab, "device": device,
-                     "encoder": encoder, "download": download, "pool_path": pool_path}
+                     "encoder": encoder, "download": download, "pool_path": pool_path,
+                     "threshold": threshold, "adj_threshold": adj_threshold}
         self.canaries = 0
 
     def check_canary(self):
@@ -300,7 +321,8 @@ def test_build_extractor_forwards_the_flags_and_runs_the_canary_once(monkeypatch
     assert ex.canaries == 1
     assert ex.args == {"ckpts": ["a.pt"], "vocab": "v.json", "device": "cpu",
                        "encoder": "bge-m3", "download": False,
-                       "pool_path": Path("pool.pt")}
+                       "pool_path": Path("pool.pt"), "threshold": None,
+                       "adj_threshold": None}
 
 
 def test_build_extractor_forwards_the_resolved_pool_not_the_flag(monkeypatch):
@@ -311,6 +333,24 @@ def test_build_extractor_forwards_the_resolved_pool_not_the_flag(monkeypatch):
     ex = build_extractor(_resolved(["a.pt"], Path("hub/pool.safetensors")), parse_args([]))
     assert ex.args["pool_path"] == Path("hub/pool.safetensors")
     assert ex.args["encoder"] is None               # legacy checkpoints keep deciding
+
+
+def test_build_extractor_applies_the_published_operating_point(monkeypatch):
+    """Thresholds the publisher validated the weights under, not the module table."""
+    import cogito_estella.integrations.llamaindex_connector as lc
+    monkeypatch.setattr(lc, "CogitoGraphExtractor", _StubExtractor)
+    ex = build_extractor(_resolved(["a.pt"], point=(0.2, 0.6)), parse_args([]))
+    assert (ex.args["threshold"], ex.args["adj_threshold"]) == (0.2, 0.6)
+
+
+def test_build_extractor_names_the_encoder_the_checkpoints_resolved(monkeypatch, capsys):
+    """With explicit legacy paths the startup line stays silent about the space; the
+    extractor announces the one it actually built."""
+    import cogito_estella.integrations.llamaindex_connector as lc
+    monkeypatch.setattr(lc, "CogitoGraphExtractor", _StubExtractor)
+    build_extractor(_resolved(["a.pt"], encoder=None), parse_args([]))
+    err = capsys.readouterr().err
+    assert "encoder=sonar" in err and "encoder=m2m100-pool" not in err
 
 
 @pytest.mark.parametrize("where", ["init", "canary"])

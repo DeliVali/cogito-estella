@@ -164,8 +164,9 @@ before relying on them. The graph lives in `<dir>/graph.json` (sentence embeddin
 `<dir>/graph.emb.npz`) and survives restarts.
 
 Weights: the manifest `encoders.json` in the Hugging Face repository maps each encoder to
-its published assets, and the default encoder resolves to the m2m100-pool ontology
-ensemble (`cogito-prose-ontology-m2mpool{,-s2,-s3}.safetensors` + `vocab-onto-m2mpool.json`
+its published assets and to the decode thresholds those assets were validated under; the
+default encoder resolves to the m2m100-pool ontology ensemble
+(`cogito-prose-ontology-m2mpool{,-s2,-s3}.safetensors` + `vocab-onto-m2mpool.json`
 + `pool.safetensors`, subfolder `m2m100-pool`). Pass `--encoder sonar` for the SONAR-era
 ensemble at the repository root, `--checkpoint` (repeatable) and `--vocab` to use local
 files, `--pool` for local pooling weights (env `COGITO_POOL`), `--device` to force

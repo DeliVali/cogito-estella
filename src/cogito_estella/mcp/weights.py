@@ -15,8 +15,9 @@ DEFAULT_CHECKPOINTS = ("cogito-prose-ontology.pt", "cogito-prose-ontology-s2.pt"
                        "cogito-prose-ontology-s3.pt")
 DEFAULT_VOCAB = "vocab-onto.json"
 
-# Published assets per encoder. `subfolder` is None for the SONAR-era files at the
-# repository root; the manifest may override any of these entries.
+# Published assets per encoder: the files to fetch and the decode thresholds they were
+# validated under. `subfolder` is None for the SONAR-era files at the repository root;
+# the manifest may override any of these entries.
 ENCODER_ASSETS: dict[str, dict] = {
     "sonar": {
         "checkpoints": DEFAULT_CHECKPOINTS,
@@ -47,12 +48,19 @@ class WeightsError(Exception):
 
 @dataclass(frozen=True)
 class ResolvedWeights:
-    """Files the server hands to the extractor, plus the encoder they belong to."""
+    """Files the server hands to the extractor, plus what the publisher says about them.
+
+    `encoder` is None when explicit paths were resolved without `--encoder`: the
+    checkpoints decide the semantic space, so naming one here would announce a space
+    the extractor may not use. `operating_point` is the published pair of decode
+    thresholds, None when the publisher names none.
+    """
 
     checkpoints: list[Path]
     vocab: Path
     pool: Path | None
-    encoder: str
+    encoder: str | None
+    operating_point: tuple[float, float] | None = None
 
 
 def _hf_download(repo_id: str, filename: str, local_files_only: bool = False,
@@ -80,7 +88,13 @@ def load_manifest(download: bool = True, downloader=None) -> dict:
 
 
 def _assets(encoder: str, manifest: dict) -> dict:
-    """Built-in table for `encoder`, overridden by its manifest entry when present."""
+    """Built-in table for `encoder`, overridden by its manifest entry when present.
+
+    Only `checkpoints`, `vocab`, `pooling`, `subfolder` and `operating_point` govern
+    what happens here; a manifest's `revision`, `dim`, `normalize` and `licence` are
+    descriptive — the binding values travel in the checkpoint sidecars, which the
+    extractor checks against the active encoder.
+    """
     entry = manifest.get(encoder)
     if entry is None and encoder not in ENCODER_ASSETS:
         raise WeightsError(f"no published weights for encoder {encoder!r}; published: "
@@ -89,7 +103,8 @@ def _assets(encoder: str, manifest: dict) -> dict:
                                                "pool": None, "subfolder": None}))
     if isinstance(entry, dict):
         for key, name in (("checkpoints", "checkpoints"), ("vocab", "vocab"),
-                          ("pool", "pooling"), ("subfolder", "subfolder")):
+                          ("pool", "pooling"), ("subfolder", "subfolder"),
+                          ("operating_point", "operating_point")):
             if name in entry:
                 assets[key] = entry[name]
     if not assets.get("checkpoints") or not assets.get("vocab"):
@@ -98,25 +113,42 @@ def _assets(encoder: str, manifest: dict) -> dict:
     return assets
 
 
+def _operating_point(encoder: str, assets: dict) -> tuple[float, float] | None:
+    """The published pair, validated: a manifest is remote data, not a literal."""
+    point = assets.get("operating_point")
+    if point is None:
+        return None
+    try:
+        existence, adjacency = (float(x) for x in point)
+    except (TypeError, ValueError) as exc:
+        raise WeightsError(f"operating_point for encoder {encoder!r} is not a pair of "
+                           f"numbers: {point!r}") from exc
+    return existence, adjacency
+
+
 def resolve(checkpoints: list[str] | None, vocab: str | None, download: bool = True,
             downloader=None, encoder: str | None = None,
             pool: str | Path | None = None) -> ResolvedWeights:
     """Explicit paths win and must all exist; otherwise the published assets of
-    `encoder`. Pooling weights are independent: an explicit `--pool` is always used."""
-    encoder = encoder or DEFAULT_ENCODER
+    `encoder` (default `DEFAULT_ENCODER`). Pooling weights are independent: an explicit
+    `--pool` is always used."""
     if bool(checkpoints) != bool(vocab):
         raise WeightsError("pass both --checkpoint and --vocab, or neither")
+    # Only the download branch may fall back to the default: with explicit paths the
+    # checkpoints decide the space, so there is no encoder to name.
+    named = encoder or (None if checkpoints else DEFAULT_ENCODER)
+    where = f" for encoder {named}" if named else ""
     pool_path = Path(pool) if pool else None
     if pool_path and not pool_path.is_file():
-        raise WeightsError(f"missing pooling weights for encoder {encoder}: {pool_path}")
+        raise WeightsError(f"missing pooling weights{where}: {pool_path}")
     if checkpoints:
         paths = [Path(c) for c in checkpoints] + [Path(vocab)]
         missing = [str(p) for p in paths if not p.is_file()]
         if missing:
-            raise WeightsError(f"missing weight files for encoder {encoder}: "
-                               f"{', '.join(missing)}")
+            raise WeightsError(f"missing weight files{where}: {', '.join(missing)}")
         return ResolvedWeights(paths[:-1], paths[-1], pool_path, encoder)
 
+    encoder = named
     dl = downloader or _hf_download
     assets = _assets(encoder, load_manifest(download, dl))
     wanted = [*assets["checkpoints"], assets["vocab"]]
@@ -135,7 +167,8 @@ def resolve(checkpoints: list[str] | None, vocab: str | None, download: bool = T
     n_ck = len(assets["checkpoints"])
     if pool_path is None and assets.get("pool"):
         pool_path = got[-1]
-    return ResolvedWeights(got[:n_ck], got[n_ck], pool_path, encoder)
+    return ResolvedWeights(got[:n_ck], got[n_ck], pool_path, encoder,
+                           _operating_point(encoder, assets))
 
 
 def ensure_spacy_model(download: bool = True, model: str = "en_core_web_sm") -> None:

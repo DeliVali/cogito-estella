@@ -151,17 +151,25 @@ def build_extractor(weights, ns: argparse.Namespace):
     """Extractor plus the startup canary. An encoder that disagrees with the
     checkpoints stops the server instead of serving triples from the wrong space.
     `ns.encoder` (not the resolved name) is forwarded: an unset flag lets legacy
-    checkpoints keep their own encoder."""
+    checkpoints keep their own encoder, and their space is announced here, once the
+    checkpoints have decided it."""
     from cogito_estella.integrations import llamaindex_connector as connector
+    point = weights.operating_point or (None, None)
     try:
         ex = connector.CogitoGraphExtractor(
             [str(c) for c in weights.checkpoints], str(weights.vocab),
             device=ns.device, encoder=ns.encoder, download=ns.download,
-            pool_path=weights.pool)
+            pool_path=weights.pool, threshold=point[0], adj_threshold=point[1])
         ex.check_canary()
     except (EncoderMismatch, PoolWeightsError) as exc:
         sys.exit(f"cogito-mcp: {exc}")
+    if weights.encoder is None:
+        print(f"cogito-mcp: {_encoder_line(ex.encoder_name)}", file=sys.stderr)
     return ex
+
+
+def _encoder_line(encoder: str) -> str:
+    return f"encoder={encoder} revision={encoder_revision(encoder)}"
 
 
 def _exit_missing_dependency(exc: ImportError) -> None:
@@ -183,8 +191,10 @@ def main(argv=None) -> None:
     store = GraphStore(extractor_factory=lambda: build_extractor(weights, ns),
                        path=ns.dir / "graph.json")
     store.load()
+    # Explicit legacy checkpoints resolve their own encoder inside the extractor, which
+    # is built lazily: name it there rather than guessing the default here.
     print(f"cogito-mcp: graph {store.path} edges={len(store.edges)} docs={len(store.docs)} "
-          f"encoder={weights.encoder} revision={encoder_revision(weights.encoder)}",
+          + (_encoder_line(weights.encoder) if weights.encoder else "encoder=from-checkpoints"),
           file=sys.stderr)
     try:
         build_server(store).run("stdio")

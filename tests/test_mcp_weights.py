@@ -45,7 +45,19 @@ def test_explicit_paths_never_touch_the_hub(tmp_path):
 
     def dl(*a, **k):
         raise AssertionError("explicit paths must not download")
-    assert w.resolve([str(ck)], str(vocab), download=True, downloader=dl).encoder
+    got = w.resolve([str(ck)], str(vocab), download=True, downloader=dl)
+    assert got.checkpoints == [ck]
+
+
+def test_explicit_paths_without_a_flag_leave_the_encoder_unset(tmp_path):
+    """The checkpoints decide; stamping the process default would announce a space the
+    extractor will not use (legacy `.pt` files resolve to sonar)."""
+    ck, vocab = tmp_path / "a.pt", tmp_path / "v.json"
+    ck.write_bytes(b"x"); vocab.write_text("{}")
+    assert w.resolve([str(ck)], str(vocab), download=False).encoder is None
+    assert w.resolve([str(ck)], str(vocab), download=False).operating_point is None
+    flagged = w.resolve([str(ck)], str(vocab), download=False, encoder="sonar")
+    assert flagged.encoder == "sonar"
 
 
 def test_partial_explicit_is_rejected(tmp_path):
@@ -59,6 +71,20 @@ def test_an_explicit_pool_is_carried_through_and_must_exist(tmp_path):
     assert w.resolve([str(ck)], str(vocab), download=False, pool=str(pool)).pool == pool
     with pytest.raises(w.WeightsError, match="pooling"):
         w.resolve([str(ck)], str(vocab), download=False, pool=str(tmp_path / "gone.pt"))
+
+
+def test_errors_name_the_encoder_only_once_one_is_settled(tmp_path):
+    """The published branch can name its default; explicit paths cannot, since nothing
+    has read the checkpoints yet."""
+    ck, vocab = tmp_path / "a.pt", tmp_path / "v.json"
+    ck.write_bytes(b"x"); vocab.write_text("{}")
+    gone = str(tmp_path / "gone.pt")
+    with pytest.raises(w.WeightsError) as explicit:
+        w.resolve([str(ck)], str(vocab), download=False, pool=gone)
+    with pytest.raises(w.WeightsError) as published:
+        w.resolve(None, None, download=False, pool=gone)
+    assert "for encoder" not in str(explicit.value)
+    assert f"for encoder {DEFAULT_ENCODER}" in str(published.value)
 
 
 # --- published assets per encoder -----------------------------------------------
@@ -88,6 +114,25 @@ def test_an_explicit_pool_replaces_the_published_one(tmp_path):
     got = w.resolve(None, None, download=True, downloader=dl, pool=str(pool))
     assert got.pool == pool
     assert w.ENCODER_ASSETS["m2m100-pool"]["pool"] not in [f for _, f, _, _ in calls]
+
+
+def test_the_published_operating_point_is_carried_through(tmp_path):
+    dl, _ = _fake_hub(tmp_path)
+    assert w.resolve(None, None, download=True, downloader=dl).operating_point == (0.1, 0.7)
+    got = w.resolve(None, None, download=True, downloader=dl, encoder="sonar")
+    assert got.operating_point == (0.1, 0.8)
+
+
+def test_the_manifest_operating_point_wins_over_the_built_in_one(tmp_path):
+    manifest = {"m2m100-pool": {"operating_point": [0.2, 0.6]}}
+    dl, _ = _fake_hub(tmp_path, manifest=manifest)
+    assert w.resolve(None, None, download=True, downloader=dl).operating_point == (0.2, 0.6)
+
+
+def test_a_manifest_operating_point_that_is_not_a_pair_is_rejected(tmp_path):
+    dl, _ = _fake_hub(tmp_path, manifest={"m2m100-pool": {"operating_point": [0.2]}})
+    with pytest.raises(w.WeightsError, match="operating_point"):
+        w.resolve(None, None, download=True, downloader=dl)
 
 
 def test_an_unpublished_encoder_lists_the_published_ones(tmp_path):
@@ -130,7 +175,7 @@ def test_a_manifest_only_encoder_is_resolvable(tmp_path):
                            "subfolder": "future"}}
     dl, _ = _fake_hub(tmp_path, manifest=manifest)
     got = w.resolve(None, None, download=True, downloader=dl, encoder="future")
-    assert got.encoder == "future" and got.pool is None
+    assert got.encoder == "future" and got.pool is None and got.operating_point is None
 
 
 def test_an_absent_manifest_falls_back_to_the_built_in_table(tmp_path):
@@ -153,10 +198,13 @@ def test_a_manifest_entry_without_weights_is_rejected(tmp_path):
         w.resolve(None, None, download=True, downloader=dl)
 
 
-def test_the_published_operating_points_match_the_encoder_module():
-    """One source of truth: the release manifest is written from this table."""
-    for name, assets in w.ENCODER_ASSETS.items():
-        assert tuple(assets["operating_point"]) == ENSEMBLE_OPERATING_POINT[name]
+def test_the_resolved_operating_point_comes_from_the_encoder_module(tmp_path):
+    """One source of truth: with no manifest every published encoder resolves to the
+    thresholds the encoder module names."""
+    dl, _ = _fake_hub(tmp_path, manifest=None)
+    for name in w.ENCODER_ASSETS:
+        got = w.resolve(None, None, download=True, downloader=dl, encoder=name)
+        assert got.operating_point == ENSEMBLE_OPERATING_POINT[name]
 
 
 # --- spaCy ----------------------------------------------------------------------

@@ -18,7 +18,7 @@ INSTRUCTIONS = ("Knowledge-graph memory over documents. `ingest` a file, directo
                 "under the '~ class-only' divider need `provenance` before you rely on them.")
 
 ASK_BUDGET_MIN, ASK_BUDGET_MAX = 100, 4000
-DEFAULT_SCORER = "lexical"        # what `ask` ranks with when the operator sets nothing
+DEFAULT_SCORER = "learned"        # what `ask` ranks with when the operator sets nothing
 SCORER_ENV = "COGITO_ASK_SCORER"
 
 

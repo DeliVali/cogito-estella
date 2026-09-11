@@ -95,10 +95,10 @@ def test_ask_use_sonar_without_embeddings_falls_back_with_a_note(tools):
     assert "scorer=lexical (sonar unavailable)" in tools.ask("sonar decoder", use_sonar=True)
 
 
-def test_ask_ranks_lexically_by_default(tools):
+def test_ask_ranks_with_the_learned_scorer_by_default(tools):
     tools.ingest(DOC)
     out = tools.ask("sonar decoder")
-    assert "scorer=lexical" in out and "sonar unavailable" not in out
+    assert "scorer=learned" in out and "sonar unavailable" not in out
 
 
 def test_ask_maps_the_toggle_to_the_store_scorer(tools, monkeypatch):
@@ -107,13 +107,13 @@ def test_ask_maps_the_toggle_to_the_store_scorer(tools, monkeypatch):
                         lambda q, budget, scorer: seen.append(scorer) or "ok")
     tools.ask("q")
     tools.ask("q", use_sonar=True)
-    assert seen == ["lexical", "sonar"]
+    assert seen == ["learned", "sonar"]
 
 
 # -- the configured scorer: module default plus an operator knob -----------------------
 
-def test_the_module_default_scorer_is_lexical():
-    assert DEFAULT_SCORER == "lexical" and resolve_scorer("") == "lexical"
+def test_the_module_default_scorer_is_learned():
+    assert DEFAULT_SCORER == "learned" and resolve_scorer("") == "learned"
 
 
 def test_ask_sends_the_configured_scorer_to_the_store(fake_extractor, monkeypatch):
@@ -130,9 +130,9 @@ def test_the_knob_is_read_once_so_one_run_cannot_change_scorer_midway(fake_extra
     seen = []
     t = Tools(GraphStore(extractor=fake_extractor(TRIPLES)))
     monkeypatch.setattr(t.store, "ask", lambda q, budget, scorer: seen.append(scorer) or "ok")
-    monkeypatch.setenv(SCORER_ENV, "learned")
+    monkeypatch.setenv(SCORER_ENV, "lexical")
     t.ask("q")
-    assert seen == ["lexical"]
+    assert seen == ["learned"]
 
 
 def test_resolve_scorer_normalizes_case_and_padding():

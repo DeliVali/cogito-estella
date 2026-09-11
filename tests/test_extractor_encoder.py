@@ -66,11 +66,20 @@ def test_a_checkpoint_without_metadata_is_a_raw_sonar_checkpoint(ck, vocab_file)
     assert ex._encoder is None
 
 
-def test_a_metadata_less_checkpoint_is_rejected_when_the_default_flips(ck, vocab_file,
-                                                                      monkeypatch):
-    """Legacy checkpoints are permanently SONAR-trained; the default is what this
-    process prefers. Conflating them would feed BGE-M3 vectors to SONAR heads."""
+def test_a_metadata_less_checkpoint_ignores_the_process_default(ck, vocab_file,
+                                                               monkeypatch):
+    """Legacy checkpoints are permanently SONAR-trained; the default is only what this
+    process prefers when nothing else says. Conflating them would feed SONAR heads
+    vectors from another space."""
     monkeypatch.setattr("cogito_estella.encoders.DEFAULT_ENCODER", "bge-m3")
+    ex = CogitoGraphExtractor(ck(), vocab_file, device="cpu")
+    assert ex.encoder_name == "sonar"
+
+
+def test_a_metadata_less_checkpoint_rejects_a_disagreeing_env(ck, vocab_file, monkeypatch):
+    """The guard the legacy rule exists for: an env preference cannot retarget heads
+    whose training space is fixed."""
+    monkeypatch.setenv("COGITO_ENCODER", "bge-m3")
     with pytest.raises(EncoderMismatch) as exc:
         CogitoGraphExtractor(ck(), vocab_file, device="cpu")
     assert "sonar" in str(exc.value) and "bge-m3" in str(exc.value)
@@ -198,3 +207,93 @@ def test_check_canary_fails_when_the_reference_is_missing(ck, vocab_file, fake_e
     monkeypatch.setattr(lc, "load_canary", dict)
     with pytest.raises(EncoderMismatch, match="canary"):
         ex.check_canary()
+
+
+# --- operating point ------------------------------------------------------------
+
+def test_the_ensemble_operating_point_follows_the_encoder(ck, vocab_file):
+    """Each encoder was swept separately; the ensemble thresholds are not universal."""
+    sonar = CogitoGraphExtractor([ck(encoder="sonar"), ck(encoder="sonar", seed=2)],
+                                 vocab_file, device="cpu")
+    assert (sonar.threshold, sonar.adj_threshold) == (0.1, 0.8)
+    pool = CogitoGraphExtractor([ck(encoder="m2m100-pool"),
+                                 ck(encoder="m2m100-pool", seed=2)],
+                                vocab_file, device="cpu")
+    assert (pool.threshold, pool.adj_threshold) == (0.1, 0.7)
+
+
+def test_a_single_model_keeps_the_unswept_point(ck, vocab_file):
+    ex = CogitoGraphExtractor(ck(encoder="m2m100-pool"), vocab_file, device="cpu")
+    assert (ex.threshold, ex.adj_threshold) == (0.15, 0.15)
+
+
+def test_explicit_thresholds_override_the_encoder_point(ck, vocab_file):
+    ex = CogitoGraphExtractor([ck(encoder="m2m100-pool"), ck(encoder="m2m100-pool", seed=2)],
+                              vocab_file, device="cpu", threshold=0.3, adj_threshold=0.4)
+    assert (ex.threshold, ex.adj_threshold) == (0.3, 0.4)
+
+
+# --- checkpoint file formats ----------------------------------------------------
+
+@pytest.fixture(scope="session")
+def st_ck(dec_state, tmp_path_factory):
+    """`st_ck(sidecar=True, **metadata)` -> safetensors checkpoint path."""
+    from safetensors.torch import save_file
+
+    root = tmp_path_factory.mktemp("st_ckpts")
+
+    def make(sidecar=True, **meta):
+        key = "-".join(f"{k}_{v}" for k, v in sorted(meta.items())) or "bare"
+        path = root / f"{key}-{'side' if sidecar else 'head'}.safetensors"
+        if not path.exists():
+            header = {} if sidecar else {lc.SAFETENSORS_META: json.dumps(meta)}
+            save_file({k: v.contiguous() for k, v in dec_state.items()}, path,
+                      metadata=header or None)
+            if sidecar:
+                path.with_suffix(".json").write_text(json.dumps(meta))
+        return str(path)
+    return make
+
+
+def test_a_safetensors_checkpoint_reads_its_contract_from_the_sidecar(st_ck, vocab_file):
+    ex = CogitoGraphExtractor(st_ck(encoder="m2m100-pool", dim=1024, normalize=False),
+                              vocab_file, device="cpu")
+    assert (ex.encoder_name, ex.dim, ex.head_normalize) == ("m2m100-pool", 1024, False)
+    assert ex._encoder is None
+
+
+def test_a_safetensors_checkpoint_falls_back_to_the_header_metadata(st_ck, vocab_file):
+    ex = CogitoGraphExtractor(st_ck(sidecar=False, encoder="m2m100-pool", normalize=True),
+                              vocab_file, device="cpu")
+    assert (ex.encoder_name, ex.head_normalize) == ("m2m100-pool", True)
+
+
+def test_a_safetensors_checkpoint_without_any_metadata_is_rejected(dec_state, tmp_path,
+                                                                   vocab_file):
+    """No sidecar, no header: the encoder would be guessed, which is what the contract
+    exists to prevent."""
+    from safetensors.torch import save_file
+
+    path = tmp_path / "nometa.safetensors"
+    save_file({k: v.contiguous() for k, v in dec_state.items()}, path)
+    with pytest.raises(EncoderMismatch) as exc:
+        CogitoGraphExtractor(str(path), vocab_file, device="cpu")
+    assert "nometa.json" in str(exc.value)
+
+
+def test_a_safetensors_checkpoint_decodes_exactly_like_its_pt_source(ck, st_ck, vocab_file):
+    """Conversion round-trip: same weights, same logits, same triples."""
+    meta = {"encoder": "m2m100-pool", "dim": 1024, "normalize": False}
+    pt = CogitoGraphExtractor(ck(**meta), vocab_file, device="cpu")
+    st = CogitoGraphExtractor(st_ck(**meta), vocab_file, device="cpu")
+    cand = sorted(VOCAB["ent2id"])
+    ids = torch.tensor([[pt.ent2id[c] for c in cand]])
+    mask = torch.ones(1, len(cand), dtype=torch.bool)
+    gen = torch.Generator().manual_seed(0)
+    for _ in range(3):                             # three fixture "sentences"
+        emb = torch.randn(1, 1024, generator=gen)
+        with torch.no_grad():
+            a, b = pt.decs[0](emb, ids, mask), st.decs[0](emb, ids, mask)
+        for key in ("exist_logits", "adj_logits"):
+            assert torch.equal(a[key], b[key]), key
+        assert pt._decode(emb[0], cand) == st._decode(emb[0], cand)

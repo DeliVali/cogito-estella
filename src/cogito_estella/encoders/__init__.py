@@ -13,9 +13,14 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-DEFAULT_ENCODER = "sonar"
+DEFAULT_ENCODER = "m2m100-pool"
 LEGACY_ENCODER = "sonar"     # checkpoints predating the encoder key; never follows the default
 DIM = 1024
+
+# Decode thresholds (existence, adjacency) from the exp051 ensemble sweep, per encoder;
+# a single model keeps the unswept point it was validated under.
+ENSEMBLE_OPERATING_POINT = {"sonar": (0.1, 0.8), "m2m100-pool": (0.1, 0.7)}
+SINGLE_OPERATING_POINT = (0.15, 0.15)
 CANARY_PATH = Path(__file__).with_name("canary.json")
 CANARY_TOLERANCE = 0.02
 CANARY_PAIRS = (
@@ -97,6 +102,15 @@ def resolve_encoder_name(explicit: str | None, checkpoint_names: list[str | None
     return wanted or DEFAULT_ENCODER
 
 
+def ensemble_operating_point(encoder: str) -> tuple[float, float]:
+    """Published ensemble point for `encoder`; unswept encoders keep the SONAR one."""
+    return ENSEMBLE_OPERATING_POINT.get(encoder, ENSEMBLE_OPERATING_POINT["sonar"])
+
+
+def operating_point(encoder: str, ensemble: bool) -> tuple[float, float]:
+    return ensemble_operating_point(encoder) if ensemble else SINGLE_OPERATING_POINT
+
+
 def _cosine_rows(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     num = np.sum(a * b, axis=1)
     den = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1)
@@ -131,6 +145,11 @@ def check_contract(enc: TextEncoder, texts: list[str], *, normalize: bool | None
 
 def load_canary() -> dict:
     return json.loads(CANARY_PATH.read_text(encoding="utf-8"))
+
+
+def encoder_revision(name: str) -> str:
+    """Revision the shipped canary was baselined on, without importing a backend."""
+    return (load_canary().get(name) or {}).get("revision", "unknown")
 
 
 def canary_cosines(enc: TextEncoder) -> list[float]:

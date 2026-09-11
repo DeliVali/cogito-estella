@@ -31,6 +31,7 @@ from cogito_estella.encoders import (
     canary_cosines,
     get_encoder,
     load_canary,
+    operating_point,
     resolve_encoder_name,
 )
 from cogito_estella.model.candidate_decoder import (
@@ -40,6 +41,32 @@ from cogito_estella.model.candidate_decoder import (
 )
 
 _ENC_BATCH = 64
+SAFETENSORS_META = "cogito"          # header key carrying the contract as JSON
+
+
+def _checkpoint_metadata(path: Path) -> dict:
+    """Contract keys of a safetensors checkpoint: sidecar `<stem>.json`, else the
+    header metadata written at conversion time."""
+    sidecar = path.with_suffix(".json")
+    if sidecar.is_file():
+        return json.loads(sidecar.read_text(encoding="utf-8"))
+    from safetensors import safe_open
+    with safe_open(str(path), framework="pt") as fh:
+        raw = (fh.metadata() or {}).get(SAFETENSORS_META)
+    if raw is None:
+        raise EncoderMismatch(f"{path} carries no encoder metadata: expected the sidecar "
+                              f"{sidecar.name} or a {SAFETENSORS_META!r} header entry")
+    return json.loads(raw)
+
+
+def load_checkpoint(path, map_location="cpu") -> dict:
+    """`{"dec": state_dict, **contract}` from safetensors + metadata, or from a `.pt`."""
+    path = Path(path)
+    if path.suffix != ".safetensors":
+        return torch.load(path, map_location=map_location, weights_only=False)
+    from safetensors.torch import load_file
+    meta = _checkpoint_metadata(path)
+    return {**meta, "dec": load_file(str(path), device=str(map_location))}
 
 _CYPHER = (
     "MERGE (a:Entity {name: $s}) "
@@ -239,9 +266,11 @@ class CogitoGraphExtractor:
                  force_top1: bool = True, encoder=None, download: bool = True,
                  pool_path=None):
         """`checkpoint`: a single path, or a list of paths for prob-averaged ensemble
-        decoding (the validated 0.827 recipe ships as 5 checkpoints). Defaults follow
-        the validated operating points: single model (0.15, 0.15); ensemble (0.1, 0.8)
-        — precision-heavy edges with force-top1 as the recall floor.
+        decoding (the validated 0.827 recipe ships as 5 checkpoints); `.safetensors`
+        (with its metadata sidecar) or `.pt`. Defaults follow the operating point swept
+        for the active encoder: single model (0.15, 0.15); ensemble (0.1, 0.8) for
+        sonar, (0.1, 0.7) for m2m100-pool — precision-heavy edges with force-top1 as
+        the recall floor.
 
         `encoder`: a name, a TextEncoder instance, or None. 1024 is 1024 in both
         semantic spaces, so a checkpoint decoded with the wrong encoder returns
@@ -253,20 +282,19 @@ class CogitoGraphExtractor:
         self.ent2id = vocab["ent2id"]
         self.rels = sorted(vocab["rel2id"], key=vocab["rel2id"].get)
         is_ens = not isinstance(checkpoint, (str, Path)) and len(list(checkpoint)) > 1
-        self.threshold = threshold if threshold is not None else (0.1 if is_ens else 0.15)
-        self.adj_threshold = (adj_threshold if adj_threshold is not None
-                              else (0.8 if is_ens else 0.15))
         self.force_top1 = force_top1
         paths = [checkpoint] if isinstance(checkpoint, (str, Path)) else list(checkpoint)
-        cks = [(path, torch.load(path, map_location=self.device, weights_only=False))
-               for path in paths]
+        cks = [(path, load_checkpoint(path, map_location=self.device)) for path in paths]
         self._encoder = encoder if not isinstance(encoder, str) else None
         self._download = download
         self._pool_path = pool_path
         explicit = encoder if isinstance(encoder, str) else (
             encoder.name if encoder is not None else None)     # a nameless encoder is a defect
         self.encoder_name = resolve_encoder_name(
-            explicit, [ck.get("encoder") for _, ck in cks], os.environ)
+            explicit, [ck.get("encoder", LEGACY_ENCODER) for _, ck in cks], os.environ)
+        point = operating_point(self.encoder_name, is_ens)
+        self.threshold = threshold if threshold is not None else point[0]
+        self.adj_threshold = adj_threshold if adj_threshold is not None else point[1]
         self.dim = DIM
         self.head_normalize = self._check_checkpoints(cks)
         self.decs = []

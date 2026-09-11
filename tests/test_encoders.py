@@ -16,6 +16,7 @@ from cogito_estella.encoders import (
     ENCODERS,
     EncoderMismatch,
     check_contract,
+    encoder_revision,
     get_encoder,
     load_canary,
     resolve_encoder_name,
@@ -53,7 +54,7 @@ def pool_file(tmp_path_factory):
 
 def test_registry_keys_are_exactly_the_three_adapters():
     assert set(ENCODERS) == {"sonar", "bge-m3", "m2m100-pool"}
-    assert DEFAULT_ENCODER == "sonar"
+    assert DEFAULT_ENCODER == "m2m100-pool"
 
 
 def test_get_encoder_unknown_name_lists_the_available_ones():
@@ -265,6 +266,44 @@ def test_load_pool_reports_a_checkpoint_without_pool_weights(tmp_path):
     assert "pool" in str(exc.value)
 
 
+def _save_pool_safetensors(path, pool, arch, sidecar=True):
+    from safetensors.torch import save_file
+
+    meta = None if sidecar else {"cogito": json.dumps({"arch": arch})}
+    save_file({k: v.contiguous() for k, v in pool.state_dict().items()}, path, metadata=meta)
+    if sidecar:
+        path.with_suffix(".json").write_text(json.dumps({"arch": arch}))
+
+
+def test_load_pool_round_trips_a_safetensors_pool_with_a_sidecar(tmp_path):
+    arch = {"d": 16, "heads": 2, "queries": 1, "hidden": 8}
+    src = AttnPool(**arch).eval()
+    path = tmp_path / "tiny.safetensors"
+    _save_pool_safetensors(path, src, arch)
+    back = load_pool(path, "cpu")
+    h, mask = torch.randn(3, 5, 16), torch.ones(3, 5, dtype=torch.bool)
+    mask[1, 3:] = False
+    with torch.inference_mode():
+        assert torch.allclose(src(h, mask), back(h, mask), atol=1e-6)
+    assert back.d == 16 and back.training is False
+
+
+def test_load_pool_reads_the_arch_from_the_safetensors_header(tmp_path):
+    arch = {"d": 16, "heads": 2, "queries": 1, "hidden": 8}
+    path = tmp_path / "header.safetensors"
+    _save_pool_safetensors(path, AttnPool(**arch).eval(), arch, sidecar=False)
+    assert load_pool(path, "cpu").d == 16
+
+
+def test_load_pool_rejects_a_safetensors_pool_that_does_not_fit_its_arch(tmp_path):
+    """A default arch over 16-d weights: the mismatch must name the file, not crash."""
+    path = tmp_path / "wrong.safetensors"
+    _save_pool_safetensors(path, AttnPool(d=16, heads=2, queries=1, hidden=8).eval(), {})
+    with pytest.raises(PoolWeightsError) as exc:
+        load_pool(path, "cpu")
+    assert "wrong.safetensors" in str(exc.value)
+
+
 def test_sha256_file_matches_hashlib(tmp_path):
     import hashlib
 
@@ -405,6 +444,13 @@ def test_canary_file_is_shipped_and_covers_every_registered_encoder():
         assert all(-1.0 <= c <= 1.0 for c in cosines)
     assert 0 < CANARY_TOLERANCE <= 0.05
     assert json.loads(CANARY_PATH.read_text(encoding="utf-8")) == data
+
+
+def test_encoder_revision_comes_from_the_shipped_canary():
+    data = load_canary()
+    for name in ENCODERS:
+        assert encoder_revision(name) == data[name]["revision"]
+    assert encoder_revision("never-published") == "unknown"
 
 
 def test_write_canary_round_trips_without_touching_the_shipped_file(tmp_path, monkeypatch,

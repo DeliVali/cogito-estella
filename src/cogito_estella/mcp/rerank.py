@@ -23,6 +23,9 @@ LEN_CENTER = 25                 # sentence length the log feature is centered on
 BM25_K1 = 1.2
 BM25_B = 0.75
 MIN_SCALE = 1e-6                # below this a column is constant: standardizing would blow up
+DEFAULT_STEPS = 2000
+DEFAULT_LR = 0.1
+MIN_PENALTY_EFFECT = 0.1        # a penalty that is asked for must shrink a weight by this much
 WEIGHTS_NAME = "rerank_weights.json"
 WEIGHTS_ENV = "COGITO_RERANK_WEIGHTS"
 _QUANTITY = ("how many", "how much", "what percentage", "what size", "what number", "how long")
@@ -34,6 +37,28 @@ def is_quantity_question(question: str) -> bool:
     """Whether the question asks for a number: digits in a sentence then mean something."""
     flat = " ".join(str(question).lower().split())
     return any(p in flat for p in _QUANTITY)
+
+
+def penalty_shrink(l2: float, rows: int, steps: int = DEFAULT_STEPS,
+                   lr: float = DEFAULT_LR) -> float:
+    """What the penalty alone does to a weight over a whole fit: each step multiplies it by
+    (1 - lr*l2/rows). The number is row-count free, so it states a strength that `l2` does
+    not — the same `l2` over ten times the rows is ten times weaker."""
+    rows = max(int(rows), 1)
+    factor = 1.0 - lr * float(l2) / rows
+    if not math.isfinite(factor) or factor <= 0.0:
+        raise ValueError("l2 too large for this step size and row count: the fit would diverge")
+    return float(factor ** int(steps))
+
+
+def l2_for_shrink(shrink: float, rows: int, steps: int = DEFAULT_STEPS,
+                  lr: float = DEFAULT_LR) -> float:
+    """The `l2` that reaches a wanted shrink at this row count: the inverse of the above."""
+    shrink = float(shrink)
+    if not math.isfinite(shrink) or not 0.0 < shrink <= 1.0:
+        raise ValueError("shrink must be the fraction a weight keeps, in (0, 1]")
+    rows = max(int(rows), 1)
+    return rows * (1.0 - shrink ** (1.0 / int(steps))) / lr
 
 
 def bigrams(tokens: Sequence[str]) -> list[tuple[str, str]]:
@@ -189,10 +214,18 @@ class RelevanceScorer:
     trained_on: str = ""
     cv: dict = field(default_factory=dict)
     l2: float | None = None                         # the penalty actually applied by `fit`
+    l2_shrink: float | None = None                  # what that penalty did to a weight
+    fit_rows: int | None = None                     # the shape the penalty was graded against
+    fit_lr: float | None = None
+    fit_steps: int | None = None
     bm25_avgdl: float | None = None                 # length normalizer of the ranking column
     bm25_universe: str = ""
 
-    def fit(self, X, y, l2: float = 1.0, steps: int = 2000, lr: float = 0.1):
+    def fit(self, X, y, l2: float = 1.0, steps: int = DEFAULT_STEPS, lr: float = DEFAULT_LR,
+            shrink: float | None = None):
+        """`l2` is summed with the loss and divided by the rows, so its strength depends on the
+        training shape; `shrink`, when given, states the strength directly and sets `l2` from
+        the row count. A non-zero `l2` that would barely move a weight is refused."""
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float).reshape(-1)
         if X.ndim != 2 or X.shape[1] != len(FEATURES):
@@ -206,10 +239,18 @@ class RelevanceScorer:
         self.std = std
         Z = (X - self.mean) / self.std
         n = max(X.shape[0], 1)
+        if shrink is not None:
+            l2 = l2_for_shrink(shrink, n, steps, lr)
         if not math.isfinite(l2) or l2 < 0:
             raise ValueError("l2 must be a finite non-negative penalty")
         if lr * l2 / n >= 1.0:                      # the per-step shrink must stay under 1
             raise ValueError("l2 too large for this step size and row count: the fit would diverge")
+        effect = penalty_shrink(l2, n, steps, lr)
+        if shrink is None and l2 > 0 and effect > 1.0 - MIN_PENALTY_EFFECT:
+            wanted = l2_for_shrink(1.0 - MIN_PENALTY_EFFECT, n, steps, lr)
+            raise ValueError(
+                f"l2={l2:g} over {n} rows leaves {effect:.4f} of a weight: the penalty does "
+                f"nothing at this shape. Pass shrink= to state the strength, or l2>={wanted:.3g}")
         w = np.zeros(X.shape[1], dtype=float)
         b = 0.0
         for _ in range(int(steps)):
@@ -220,6 +261,8 @@ class RelevanceScorer:
             b -= lr * float(err.mean())
         self.w, self.b = w, float(b)
         self.l2 = float(l2)
+        self.l2_shrink = effect
+        self.fit_rows, self.fit_lr, self.fit_steps = int(n), float(lr), int(steps)
         return self
 
     def score(self, X) -> np.ndarray:
@@ -260,6 +303,14 @@ class RelevanceScorer:
         if shipped:
             if self.l2 is None or not math.isfinite(float(self.l2)) or float(self.l2) < 0:
                 raise ValueError("weights do not record the penalty they were fitted with")
+            recorded = (self.l2_shrink, self.fit_rows, self.fit_lr, self.fit_steps)
+            if any(v is None for v in recorded):
+                raise ValueError("weights do not record what the penalty did, only its number")
+            if not math.isclose(float(self.l2_shrink),
+                                penalty_shrink(float(self.l2), int(self.fit_rows),
+                                               int(self.fit_steps), float(self.fit_lr)),
+                                rel_tol=1e-9):
+                raise ValueError("the recorded penalty effect does not follow from the penalty")
             if self.bm25_avgdl is None:
                 raise ValueError("weights do not pin the length normalizer of the ranking column")
         return self
@@ -271,7 +322,9 @@ class RelevanceScorer:
         blob = {"features": list(self.features), "mean": np.asarray(self.mean).tolist(),
                 "std": np.asarray(self.std).tolist(), "w": np.asarray(self.w).tolist(),
                 "b": float(self.b), "trained_on": self.trained_on, "cv": self.cv,
-                "l2": float(self.l2), "bm25_avgdl": float(self.bm25_avgdl),
+                "l2": float(self.l2), "l2_shrink": float(self.l2_shrink),
+                "fit_rows": int(self.fit_rows), "fit_lr": float(self.fit_lr),
+                "fit_steps": int(self.fit_steps), "bm25_avgdl": float(self.bm25_avgdl),
                 "bm25_universe": self.bm25_universe}
         path.write_text(json.dumps(blob, indent=2, default=_plain) + "\n", encoding="utf-8")
         return path
@@ -287,6 +340,10 @@ class RelevanceScorer:
                  trained_on=str(blob.get("trained_on", "")),
                  cv=blob.get("cv") or {},
                  l2=None if blob.get("l2") is None else float(blob["l2"]),
+                 l2_shrink=None if blob.get("l2_shrink") is None else float(blob["l2_shrink"]),
+                 fit_rows=None if blob.get("fit_rows") is None else int(blob["fit_rows"]),
+                 fit_lr=None if blob.get("fit_lr") is None else float(blob["fit_lr"]),
+                 fit_steps=None if blob.get("fit_steps") is None else int(blob["fit_steps"]),
                  bm25_avgdl=None if blob.get("bm25_avgdl") is None else float(blob["bm25_avgdl"]),
                  bm25_universe=str(blob.get("bm25_universe", "")))
         return sc.validate(shipped=True)

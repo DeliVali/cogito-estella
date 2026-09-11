@@ -18,7 +18,9 @@ from cogito_estella.mcp.rerank import (
     corpus_avgdl,
     featurize,
     is_quantity_question,
+    l2_for_shrink,
     load_default,
+    penalty_shrink,
 )
 
 CANDS = [
@@ -350,7 +352,7 @@ def test_fit_keeps_a_constant_feature_finite():
 
 def test_stronger_l2_shrinks_the_weights():
     X, y = separable()
-    weak = RelevanceScorer().fit(X, y, l2=0.1)
+    weak = RelevanceScorer().fit(X, y, l2=1.0)
     strong = RelevanceScorer().fit(X, y, l2=1000.0)
     assert np.abs(strong.w).sum() < np.abs(weak.w).sum()
 
@@ -603,3 +605,90 @@ def test_fit_is_invariant_to_the_scale_of_a_feature():
     plain = RelevanceScorer().fit(X, y)
     shifted = RelevanceScorer().fit(rescaled, y)
     assert shifted.score(rescaled) == pytest.approx(plain.score(X), abs=1e-6)
+
+
+# -- the penalty in units that do not depend on the row count -------------------
+def test_penalty_shrink_and_l2_for_shrink_invert_each_other():
+    for rows in (200, 13800):
+        for target in (0.9, 0.5, 0.05):
+            l2 = l2_for_shrink(target, rows)
+            assert penalty_shrink(l2, rows) == pytest.approx(target, rel=1e-9)
+
+
+def test_the_same_l2_means_less_and_less_as_the_rows_grow():
+    """The number in the spec is not a strength: at the training shape it is inert."""
+    assert penalty_shrink(1.0, 200) < 0.5
+    assert penalty_shrink(1.0, 13800) > 0.98
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.5, 1.5, float("nan")])
+def test_l2_for_shrink_rejects_a_factor_that_is_not_a_shrink(bad):
+    with pytest.raises(ValueError, match="shrink"):
+        l2_for_shrink(bad, 200)
+
+
+def test_fit_refuses_a_penalty_that_does_nothing_at_this_row_count():
+    """A penalty that is asked for has to happen: a fixed l2 carried to a large training
+    set shrinks nothing, and the weights file would still report it as regularization."""
+    X = np.zeros((20000, 12))
+    y = np.zeros(20000)
+    with pytest.raises(ValueError, match="shrink"):
+        RelevanceScorer().fit(X, y, l2=1.0)
+
+
+def test_fit_accepts_an_explicit_absence_of_a_penalty():
+    X = np.zeros((20000, 12))
+    y = np.zeros(20000)
+    assert RelevanceScorer().fit(X, y, l2=0.0).l2 == 0.0
+
+
+def test_shrink_states_the_penalty_independently_of_the_row_count():
+    X, y = separable()
+    doubled, labels = np.vstack([X, X]), np.concatenate([y, y])
+    one = RelevanceScorer().fit(X, y, shrink=0.5)
+    two = RelevanceScorer().fit(doubled, labels, shrink=0.5)
+    assert two.w == pytest.approx(one.w, abs=2e-3)
+    assert two.l2 == pytest.approx(2.0 * one.l2, rel=1e-6)
+    assert one.l2_shrink == pytest.approx(0.5) and two.l2_shrink == pytest.approx(0.5)
+
+
+def test_fit_records_the_effect_of_the_penalty_and_the_shape_it_was_measured_on():
+    X, y = separable()
+    sc = RelevanceScorer().fit(X, y, l2=2.0)
+    assert sc.fit_rows == X.shape[0] and sc.fit_steps == 2000 and sc.fit_lr == pytest.approx(0.1)
+    assert sc.l2_shrink == pytest.approx(penalty_shrink(2.0, X.shape[0]))
+
+
+def test_weights_file_carries_the_effect_of_the_penalty(tmp_path):
+    X, y = separable()
+    path = tmp_path / "w.json"
+    fitted(X, y, l2=2.0).to_json(path)
+    blob = json.loads(path.read_text())
+    assert set(blob) >= {"l2", "l2_shrink", "fit_rows", "fit_lr", "fit_steps"}
+    assert blob["l2_shrink"] == pytest.approx(penalty_shrink(2.0, X.shape[0]))
+    assert RelevanceScorer.from_json(path).l2_shrink == pytest.approx(blob["l2_shrink"])
+
+
+@pytest.mark.parametrize("key", ["l2_shrink", "fit_rows", "fit_lr", "fit_steps"])
+def test_from_json_rejects_a_file_that_does_not_say_what_the_penalty_did(tmp_path, key):
+    X, y = separable()
+    path = tmp_path / "w.json"
+    fitted(X, y).to_json(path)
+    blob = json.loads(path.read_text())
+    del blob[key]
+    path.write_text(json.dumps(blob))
+    with pytest.raises(ValueError, match="penalty"):
+        RelevanceScorer.from_json(path)
+
+
+def test_from_json_rejects_an_effect_that_does_not_follow_from_the_penalty(tmp_path):
+    """The recorded effect is recomputed from l2, rows, steps and step size: a file cannot
+    claim regularization it did not apply."""
+    X, y = separable()
+    path = tmp_path / "w.json"
+    fitted(X, y).to_json(path)
+    blob = json.loads(path.read_text())
+    blob["l2_shrink"] = 0.5 * blob["l2_shrink"]
+    path.write_text(json.dumps(blob))
+    with pytest.raises(ValueError, match="penalty"):
+        RelevanceScorer.from_json(path)

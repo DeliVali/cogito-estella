@@ -132,6 +132,8 @@ class GraphStore:
         self._avgdl: float | None = None           # mean sentence length of that universe
         self._emb_warned = False
         self._emb_keep_warned = False
+        self.emb_encoder: str | None = None       # encoder that produced the sidecar rows
+        self._emb_space_warned = False
         self.ledger = Ledger()
         self.persisted_at: str | None = None
         self._lock = threading.RLock()     # sync tools run in worker threads: serialize mutation
@@ -272,6 +274,7 @@ class GraphStore:
         encode = getattr(ex, "encode_batch", None)
         if encode is None or not texts:
             return
+        self._drop_foreign_embeddings(ex)
         try:
             with _quiet():                         # stdout is the MCP wire
                 emb = np.asarray(encode(texts), dtype=np.float16)
@@ -289,6 +292,7 @@ class GraphStore:
                       "ask ranks lexically", file=sys.stderr)
             return
         self.emb[source] = emb
+        self.emb_encoder = getattr(ex, "encoder_name", None) or self.emb_encoder
 
     @staticmethod
     def _emb_defect(emb: np.ndarray, n_texts: int, dim: int | None) -> str:
@@ -464,6 +468,8 @@ class GraphStore:
         if requested not in ASK_SCORERS:           # a stray value must not pick a scorer by luck
             raise ValueError(f"unknown scorer {str(scorer).strip()[:24]!r}; "
                              f"use one of: {', '.join(ASK_SCORERS)}")
+        if requested != "lexical" and self.emb:
+            self._drop_foreign_embeddings(self.extractor)
         lex, snap, edges = self._ask_snapshot(question, dense=requested != "lexical")
         scores, name = self._score_sentences(question, lex, snap, requested, budget)
         if not snap.ents and not any(s > 0 for s in scores):
@@ -761,6 +767,24 @@ class GraphStore:
                 self.path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
 
     # -- embedding sidecar (<graph>.emb.npz) -----------------------------------------
+    def _current_encoder(self) -> str | None:
+        """Encoder behind a materialized extractor; None until one exists."""
+        return getattr(self._ex, "encoder_name", None) if self._ex is not None else None
+
+    def _drop_foreign_embeddings(self, ex) -> None:
+        """Rows encoded in another encoder's space are dropped before use or extension:
+        a cosine across spaces is noise, and a sidecar must not mix spaces."""
+        cur = getattr(ex, "encoder_name", None)
+        if not (self.emb and cur and self.emb_encoder and cur != self.emb_encoder):
+            return
+        with self._lock:
+            self.emb = {}
+        if not self._emb_space_warned:
+            self._emb_space_warned = True
+            print(f"cogito-mcp: stored sentence embeddings come from {self.emb_encoder}, the "
+                  f"server runs {cur}; ask ranks lexically until the documents are re-ingested",
+                  file=sys.stderr)
+
     def _emb_path(self) -> Path | None:
         return self.path.with_suffix(".emb.npz") if self.path else None
 
@@ -784,6 +808,7 @@ class GraphStore:
                          counts=np.array([self.emb[s].shape[0] for s in sources]),
                          # content hash per block: a same-length replacement must not pass
                          shas=np.array([self.docs.get(s, {}).get("sha256", "") for s in sources]),
+                         encoder=np.array(self._current_encoder() or self.emb_encoder or ""),
                          emb=np.concatenate([self.emb[s] for s in sources], axis=0))
             os.replace(tmp, p)
         finally:
@@ -800,6 +825,7 @@ class GraphStore:
                 counts = [int(c) for c in z["counts"]]
                 shas = [str(s) for s in z["shas"]]      # absent in pre-0.15.0 sidecars: KeyError
                 emb = z["emb"]
+                tag = str(z["encoder"]) if "encoder" in z.files else "sonar"   # pre-0.16.0: SONAR
             if emb.ndim != 2 or emb.dtype.kind != "f" or len(sources) != len(counts) \
                     or len(sources) != len(shas) or sum(counts) != emb.shape[0]:
                 raise ValueError("sidecar matrix does not match its index")
@@ -812,6 +838,7 @@ class GraphStore:
                 if doc.get("sha256") == sha and doc.get("sentences") == n:
                     out[src] = block
             self.emb = out
+            self.emb_encoder = tag if out else None
         except (OSError, ValueError, KeyError, EOFError, IndexError) as exc:
             print(f"cogito-mcp: embeddings sidecar unusable ({exc}); ask ranks lexically",
                   file=sys.stderr)

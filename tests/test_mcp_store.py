@@ -726,3 +726,64 @@ def test_dense_constants_keep_their_older_names():
     from cogito_estella.mcp import store as S
     assert (S.SONAR_COS_FLOOR, S.SONAR_FLOOR, S.SONAR_OFFSET) == (S.DENSE_COS_FLOOR, S.DENSE_FLOOR, S.DENSE_OFFSET)
     assert S.SCORER_ALIASES == {"sonar": "dense"} and "dense" in S.ASK_SCORERS
+
+
+# -- the sidecar names its encoder ------------------------------------------------
+
+def _unit_rows(texts):
+    rows = np.zeros((len(texts), 8), dtype=np.float32)
+    rows[:, 0] = 1.0
+    return rows
+
+
+def _encoding_extractor(fake_extractor, name):
+    ex = fake_extractor(ASK_TRIPLES)
+    ex.encode_batch = lambda texts, lang="eng_Latn": _unit_rows(texts)
+    ex.encoder_name = name
+    return ex
+
+
+def test_the_sidecar_records_the_encoder_that_produced_it(tmp_path, fake_extractor):
+    path = tmp_path / "graph.json"
+    GraphStore(extractor=_encoding_extractor(fake_extractor, "sonar"), path=path) \
+        .ingest_text(ASK_DOC, "t")
+    with np.load(path.with_suffix(".emb.npz"), allow_pickle=False) as z:
+        assert str(z["encoder"]) == "sonar"
+    back = GraphStore(extractor=_encoding_extractor(fake_extractor, "sonar"), path=path)
+    back.load()
+    assert back.emb_encoder == "sonar" and set(back.emb) == {"t"}
+    assert "scorer=dense" in back.ask(Q, scorer="dense")
+
+
+def test_rows_from_another_encoder_are_dropped_before_dense_ranking(tmp_path, fake_extractor,
+                                                                    capsys):
+    path = tmp_path / "graph.json"
+    GraphStore(extractor=_encoding_extractor(fake_extractor, "sonar"), path=path) \
+        .ingest_text(ASK_DOC, "t")
+    back = GraphStore(extractor=_encoding_extractor(fake_extractor, "m2m100-pool"), path=path)
+    back.load()
+    assert set(back.emb) == {"t"}                     # loaded; judged when used
+    out = back.ask(Q, scorer="dense")
+    assert "scorer=lexical (dense unavailable)" in out and back.emb == {}
+    assert "come from sonar" in capsys.readouterr().err
+    back.ingest_text("The budget funds the committee. " + ASK_DOC, "u")
+    assert back.emb_encoder == "m2m100-pool" and set(back.emb) == {"u"}
+    with np.load(path.with_suffix(".emb.npz"), allow_pickle=False) as z:
+        assert str(z["encoder"]) == "m2m100-pool"
+
+
+def test_a_sidecar_without_an_encoder_tag_counts_as_sonar(tmp_path, fake_extractor):
+    path = tmp_path / "graph.json"
+    GraphStore(extractor=_encoding_extractor(fake_extractor, "sonar"), path=path) \
+        .ingest_text(ASK_DOC, "t")
+    side = path.with_suffix(".emb.npz")
+    with np.load(side, allow_pickle=False) as z:
+        legacy = {k: z[k] for k in z.files if k != "encoder"}
+    with side.open("wb") as fh:
+        np.savez(fh, **legacy)
+    kept = GraphStore(extractor=_encoding_extractor(fake_extractor, "sonar"), path=path)
+    kept.load()
+    assert kept.emb_encoder == "sonar" and "scorer=dense" in kept.ask(Q, scorer="dense")
+    moved = GraphStore(extractor=_encoding_extractor(fake_extractor, "m2m100-pool"), path=path)
+    moved.load()
+    assert "dense unavailable" in moved.ask(Q, scorer="dense") and moved.emb == {}

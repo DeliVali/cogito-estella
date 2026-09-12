@@ -166,6 +166,22 @@ introduces facts that only carry a coarse class label — check those with `prov
 before relying on them. The graph lives in `<dir>/graph.json` (sentence embeddings in
 `<dir>/graph.emb.npz`) and survives restarts.
 
+**Measured with a real agent** — 50 questions over five arXiv papers, Claude Code headless
+(Haiku) answering under the same rules in every branch, a judge blind to the branch, and the
+Claude Code prefix calibrated the same day (harness under the untracked `experiments/`):
+
+| branch | accuracy | raw input tokens / question | net tokens / question |
+| :--- | :--- | :--- | :--- |
+| whole paper in the prompt | 1.00 | 38,231 | 12,810 |
+| native `Read`/`Grep` on the file | 0.98 | 89,493 | 4,753 |
+| one `ask` reply (600-token budget) | 0.78 | 26,126 | 613 |
+
+Raw tokens are what the API bills before caching, measured end to end; the ~25k-token
+Claude Code prefix dominates every branch. Net tokens subtract that calibrated prefix and
+are an estimate. One `ask` reply answers 78 % of the questions (abstaining on 16 %) at
+1.46× fewer raw tokens and about 21× fewer net tokens than pasting the paper; the
+`Read`/`Grep` agent is accurate but costs 2.3× the raw tokens of pasting the paper.
+
 Weights: the manifest `encoders.json` in the Hugging Face repository maps each encoder to
 its published assets and to the decode thresholds those assets were validated under; the
 default encoder resolves to the m2m100-pool ontology ensemble

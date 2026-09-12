@@ -31,7 +31,7 @@ add that directory to `.gitignore`.
   are deduplicated by content hash and replaced when they change.
 - `ask(question, budget=600, use_dense=False)` — start here. The graph facts for the
   entities in the question, a `--` line, then the source sentences that answer it, within
-  `budget` tokens. Sentences are shortlisted by IDF and ordered by a learned relevance
+  `budget` tokens (`use_sonar` is the older name of the flag). Sentences are shortlisted by IDF and ordered by a learned relevance
   scorer; `use_dense=True` ranks them by encoder cosine instead.
 - `query(entity, hops, limit)`, `provenance(edge_ids)`, `search(term)`, `entities(prefix)`
   and `stats()` go deeper when one `ask` is not enough. Facts listed under
@@ -84,10 +84,13 @@ ex = CogitoGraphExtractor([str(c) for c in w.checkpoints], str(w.vocab), pool_pa
 ex.extract("The committee approved the new budget.")    # [(subject, relation, object), ...]
 ```
 
-`extract_with_literals` keeps exact literals (IDs, hashes, amounts) verbatim with
-provenance; `to_neo4j` and `ensure_schema` write triples into Neo4j with idempotent
-constraints; `cogito_estella.graph_summary.GraphSummarizer` writes community summaries
-over the triples and rejects the ones that mention entities absent from their cluster.
+`extract_with_literals` keeps exact literals (IDs, hashes, amounts) verbatim and
+`literals_to_neo4j` stores them with provenance; `to_neo4j` writes triples into Neo4j. Call
+`ensure_schema(driver)` once per database before concurrent writers: its uniqueness
+constraints make parallel `MERGE`s deterministic, and they cannot be created while the
+database still holds duplicate nodes. `cogito_estella.graph_summary.GraphSummarizer`
+writes community summaries over the triples and flags (`accepted=False`) the ones that
+mention entities absent from their cluster.
 
 ## How it works
 
@@ -118,7 +121,7 @@ uv run python -m spacy download en_core_web_sm
 uv run pytest tests/
 ```
 
-570 tests with every extra installed; modules that need the `[sonar]` extra and the tests
+573 tests with every extra installed; modules that need the `[sonar]` extra and the tests
 that load a real encoder on CUDA skip themselves without them. Package layout:
 `model/` (decoder heads), `encoders/` (encoder contract, adapters, pooling, canary),
 `mcp/` (store, readers, scorers, server), `integrations/` (the extractor). Training data,

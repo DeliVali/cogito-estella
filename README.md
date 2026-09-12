@@ -1,7 +1,8 @@
 # Cogito Estella: Latent Graph Engine (v0.16.0)
 
-Non-autoregressive inference backend that decodes SONAR (Meta) semantic embeddings
-directly into knowledge graphs, bypassing token-based text decoding entirely.
+Non-autoregressive inference backend that decodes sentence embeddings (Meta's M2M-100
+encoder under a learned pooling by default; SONAR optional) directly into knowledge
+graphs, bypassing token-based text decoding entirely.
 Mapped, trained, and validated end-to-end on a single RTX 5070 (12 GB).
 
 ![Cogito Estella demo: text to knowledge graph in one forward pass, with cross-lingual extraction](assets/demo.gif)
@@ -128,8 +129,9 @@ encoder (MIT) under a learned attention pooling trained here. Pooling and decode
 are Apache-2.0 and download from Hugging Face on first run — no non-commercial term
 anywhere in the default path. The SONAR encoder stays available for research
 (`pip install "cogito-estella[sonar]"`, `--encoder sonar`) and keeps its CC-BY-NC 4.0
-terms at runtime; SONAR-era checkpoints without encoder metadata still resolve to SONAR,
-so 0.15.0 setups keep working unchanged.
+terms at runtime; SONAR-era checkpoints without encoder metadata still resolve to SONAR.
+A graph ingested under 0.15.0 keeps its facts; its sentence embeddings serve `use_dense`
+only while the server runs the encoder that produced them (re-ingest to refresh them).
 
 Client configuration (Claude Code `.mcp.json`, Cursor, etc.):
 
@@ -137,20 +139,21 @@ Client configuration (Claude Code `.mcp.json`, Cursor, etc.):
 {"mcpServers": {"cogito": {"command": "cogito-mcp", "args": ["--dir", ".cogito"]}}}
 ```
 
-Tools: `ask(question, budget, use_sonar)` — the default route from a question to an answer —
+Tools: `ask(question, budget, use_dense)` — the default route from a question to an answer —
 plus `ingest(path_or_text)` (file, directory of txt/md/html/pdf, or raw text; documents
 are deduplicated by content hash and replaced when they change), `query(entity, hops,
 limit)`, `provenance(edge_ids)`, `search(term)`, `entities(prefix)`, `stats()`.
 
 `ask` returns the graph facts for the entities it recognizes in the question, then a `--`
 line, then the source sentences that answer it, capped at `budget` tokens (default 600,
-40 % facts / 60 % sentences). Lexical IDF is the primary ranking engine; `use_sonar=True`
-(off by default) ranks the sentence block by SONAR cosine instead, and falls back to
-lexical with a note when the graph carries no embeddings. The two scores are never
-merged:
+40 % facts / 60 % sentences). Sentences are shortlisted by lexical IDF and ordered by a
+learned relevance scorer (twelve lexical, structural and embedding features under a logistic
+model shipped with the package); `COGITO_ASK_SCORER=lexical` keeps the plain IDF order, and
+`use_dense=True` ranks the block by encoder cosine instead, falling back to lexical with a
+note when the graph carries no embeddings. The header names the scorer that answered:
 
 ```
-entities: blt, layer · scorer=lexical
+entities: blt, layer · scorer=learned
 blt encode byte #12
 --
 2412.09871.txt s112: "We use SwiGLU activation in the feed-forward layers, as in Llama 3."
@@ -169,7 +172,8 @@ default encoder resolves to the m2m100-pool ontology ensemble
 (`cogito-prose-ontology-m2mpool{,-s2,-s3}.safetensors` + `vocab-onto-m2mpool.json`
 + `pool.safetensors`, subfolder `m2m100-pool`). Pass `--encoder sonar` for the SONAR-era
 ensemble at the repository root, `--checkpoint` (repeatable) and `--vocab` to use local
-files, `--pool` for local pooling weights (env `COGITO_POOL`), `--device` to force
+files, `--pool` for local pooling weights (otherwise the published pooling is
+downloaded), `--device` to force
 `cuda`/`cpu` (default: auto-detect), `--no-download` to fail fast offline. Checkpoints
 carry their encoder, width and normalization; a checkpoint decoded in the wrong semantic
 space stops the server instead of emitting triples, and a startup canary re-checks the
@@ -230,10 +234,10 @@ Champion checkpoints ship via [GitHub Releases](../../releases) and
 | `cogito-prose-openvocab{,-s4,-s5}.pt` + `cogito-prose-cascade-fallback.pt` | open-vocab prose stack | 0.6514 |
 | `vocab-prose.json` | entity/relation vocabulary (20k/60) | — |
 | `cogito-prose-ontology{,-s2,-s3}.pt` + `vocab-onto.json` | ontology ensemble ×3, 76 relations (SONAR) | 0.796 @ 91 % coverage |
-| `m2m100-pool/cogito-prose-ontology-m2mpool{,-s2,-s3}.safetensors` + `vocab-onto-m2mpool.json` + `pool.safetensors` | ontology ensemble ×3, 76 relations (M2M-100 + learned pooling) | 0.784 @ 91 % coverage — default for `cogito-mcp`, fully permissive |
+| `m2m100-pool/cogito-prose-ontology-m2mpool{,-s2,-s3}.safetensors` + `vocab-onto-m2mpool.json` + `pool.safetensors` | ontology ensemble ×3, 76 relations (M2M-100 + learned pooling) | 0.852 @ 91 % coverage — default for `cogito-mcp`, fully permissive |
 
 ```bash
-pip install "cogito-estella[sonar]"     # or: uv sync (from a clone)
+pip install "cogito-estella[sonar]"     # or: uv sync --extra sonar (from a clone)
 # download cogito-prose-candidates-ft.pt + vocab-prose.json next to quickstart.py
 python quickstart.py
 ```
@@ -254,12 +258,12 @@ embedding: `extract_with_literals` detects them deterministically in the source 
 `literals_to_neo4j` stores them verbatim with provenance — character-exact recovery by
 query, guaranteed by copying rather than decoding.
 
-**Weight licensing:** all from-scratch decoder heads (GraphDecoder,
-CandidateGraphDecoder, trunks, ensembles) and the learned attention pooling are
-Apache-2.0; the `m2m100-pool` encoder they run on is Meta's M2M-100 418M, MIT. The
-SONAR-space assets (the SONAR encoder itself, the SONAR-era ensembles decoded in its
-space, and the code-modality LoRA adapters that modify it) inherit SONAR's CC-BY-NC 4.0
-non-commercial terms.
+**Weight licensing:** every decoder head, trunk and ensemble is trained from scratch on
+this project's data and released under Apache-2.0, as is the learned attention pooling;
+the `m2m100-pool` encoder they run on is Meta's M2M-100 418M (MIT). The SONAR-era
+ensembles are Apache-2.0 too, but they decode vectors that only the SONAR encoder
+produces, so its CC-BY-NC 4.0 terms apply to any pipeline that runs them; the
+code-modality LoRA adapters modify SONAR's own weights and inherit CC-BY-NC 4.0 outright.
 
 ---
 
@@ -283,26 +287,35 @@ src/cogito_estella/
   model/token_baseline.py      # matched-FLOP token baseline
   model/sonar_loss.py          # CE propagated through the frozen SONAR decoder
   model/train_graph.py         # resumable training loop
+  encoders/                    # TextEncoder contract: sonar / m2m100-pool adapters, pooling, canary
+  mcp/                         # cogito-mcp: graph store, readers, scorers, learned re-ranker, server
+  integrations/                # CogitoGraphExtractor for LlamaIndex / LangChain
   sonar_codec.py               # SONAR encode/decode, OOM-resilient
   segmenter.py                 # SaT multilingual segmentation
   multilingual_factory.py      # canonicalized ingestion from open sources
   preprocess.py                # sanitization + atomic spacing (script-gated)
   graph_target.py              # target-graph construction
   graph_metrics.py             # Triple F1, GED proxy, tool-call F1
+  graph_summary.py             # cluster-level summaries with grounding gates
+  relation_lexicalizer.py      # relation labels read from dependency syntax
   compute.py                   # FLOP/bandwidth accounting, roofline
 ```
 
 Training data, experiment scaffolding, and logs are untracked; the unit-test suite
-ships with the repository — **427 tests**, fully reproducible offline:
+ships with the repository — **570 tests** with every extra installed; the modules that
+need the `[sonar]` extra, and the tests that load a real encoder on CUDA, skip themselves
+without them:
 
 ```bash
-uv sync
+uv sync --all-extras
+uv run python -m spacy download en_core_web_sm
 uv run pytest tests/
 ```
 
-Requires Python 3.12; SONAR/SaT weights download on first use.
+Requires Python 3.12. The default encoder (M2M-100 418M, ~1.9 GB) and the heads download on
+first use; SONAR/SaT weights only with the `[sonar]` extra.
 
 ## License
 
-Distributed under the **Apache License 2.0**. See the `LICENSE` file for details on
-relational-patent protection and commercial use.
+Distributed under the **Apache License 2.0** (see `LICENSE`), which includes an express
+patent grant. Weight licensing is described above.

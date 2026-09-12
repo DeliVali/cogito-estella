@@ -1,8 +1,10 @@
 [project]
 name = "cogito-estella"
 version = "0.16.0"
-description = "Cogito Estella — Latent Graph Engine: non-autoregressive concept-to-knowledge-graph decoding in the SONAR space"
+description = "Cogito Estella — Latent Graph Engine: non-autoregressive decoding of sentence embeddings into knowledge graphs"
 readme = "README.md"
+license = { text = "Apache-2.0" }
+classifiers = ["License :: OSI Approved :: Apache Software License", "Programming Language :: Python :: 3.12"]
 requires-python = ">=3.12,<3.13"
 authors = [{ name = "Jeffrey Romero Del Val", email = "delvaljeffrey@gmail.com" }]
 dependencies = [

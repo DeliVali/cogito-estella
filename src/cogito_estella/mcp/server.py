@@ -111,9 +111,9 @@ def build_server(store: GraphStore):
             use_sonar: bool = False) -> str:
         """Start here for any question: graph facts, then a '--' line, then the source
         sentences that answer it, ranked. `budget` caps the reply in tokens (100-4000,
-        40 % facts / 60 % sentences). IDF ranking by default; use_dense=True ranks the
-        sentence block with SONAR embeddings when the graph has them (falls back to
-        lexical with a note). Go deeper with `query`, `provenance` and `search` only
+        40 % facts / 60 % sentences). Sentences are shortlisted by IDF and ordered by the
+        learned relevance scorer; use_dense=True ranks the block by encoder cosine instead
+        when the graph has embeddings (falls back to lexical with a note). Go deeper with `query`, `provenance` and `search` only
         when this reply is not enough."""
         return t.ask(question, budget, use_dense, use_sonar)
 
@@ -162,7 +162,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--encoder", choices=sorted(ENCODERS), default=None,
                     help="text encoder (default: whatever the checkpoints were trained on)")
     ap.add_argument("--pool", type=Path, default=None,
-                    help="learned pooling weights (m2m100-pool; env COGITO_POOL)")
+                    help="learned pooling weights for m2m100-pool (default: the published file)")
     ap.add_argument("--no-download", dest="download", action="store_false",
                     help="never download weights or the spaCy model")
     return ap.parse_args(argv)

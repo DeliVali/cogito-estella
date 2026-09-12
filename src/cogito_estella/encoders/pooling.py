@@ -1,8 +1,8 @@
 """Learned attention pooling over frozen encoder token states.
 
-`AttnPool` is the module trained in exp058 (copied verbatim); `load_pool` restores it
-from that experiment's checkpoint layout `{"pool": state_dict, "arch": {...}, ...}` or
-from the released `pool.safetensors` + `pool.json` pair.
+`AttnPool` is the module the released pooling weights were trained with; `load_pool`
+restores it from the training checkpoint layout `{"pool": state_dict, "arch": {...}, ...}`
+or from the released `pool.safetensors` + `pool.json` pair.
 """
 from __future__ import annotations
 

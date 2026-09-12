@@ -37,7 +37,8 @@ ENCODER_ASSETS: dict[str, dict] = {
     },
 }
 
-_HELP = ("Get them with `--checkpoint <file> --vocab <file>` (local paths) or let cogito-mcp "
+_HELP = ("Get them with `--checkpoint <file> --vocab <file>` (plus `--pool <file>` for "
+         "m2m100-pool; local paths) or let cogito-mcp "
          f"download the defaults from https://huggingface.co/{HF_REPO} (needs network; "
          "omit --no-download).")
 

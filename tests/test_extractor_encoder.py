@@ -219,7 +219,7 @@ def test_the_ensemble_operating_point_follows_the_encoder(ck, vocab_file):
     pool = CogitoGraphExtractor([ck(encoder="m2m100-pool"),
                                  ck(encoder="m2m100-pool", seed=2)],
                                 vocab_file, device="cpu")
-    assert (pool.threshold, pool.adj_threshold) == (0.1, 0.7)
+    assert (pool.threshold, pool.adj_threshold) == (0.1, 0.8)
 
 
 def test_a_single_model_keeps_the_unswept_point(ck, vocab_file):

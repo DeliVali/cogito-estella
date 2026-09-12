@@ -9,11 +9,11 @@
   },
   "m2m100-pool": {
     "cosines": [
-      0.1357,
-      0.5428
+      0.0483,
+      0.4926
     ],
     "dim": 1024,
-    "revision": "55c2e61bbf05dfb8d7abccdc3fae6fc8512fd636+pool:f8b0db2b829d"
+    "revision": "55c2e61bbf05dfb8d7abccdc3fae6fc8512fd636+pool:abb6bbade64b"
   },
   "pairs": [
     [

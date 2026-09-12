@@ -19,7 +19,7 @@ DIM = 1024
 
 # Decode thresholds (existence, adjacency) from the exp051 ensemble sweep, per encoder;
 # a single model keeps the unswept point it was validated under.
-ENSEMBLE_OPERATING_POINT = {"sonar": (0.1, 0.8), "m2m100-pool": (0.1, 0.7)}
+ENSEMBLE_OPERATING_POINT = {"sonar": (0.1, 0.8), "m2m100-pool": (0.1, 0.8)}
 SINGLE_OPERATING_POINT = (0.15, 0.15)
 CANARY_PATH = Path(__file__).with_name("canary.json")
 CANARY_TOLERANCE = 0.02

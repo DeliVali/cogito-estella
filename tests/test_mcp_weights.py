@@ -118,7 +118,7 @@ def test_an_explicit_pool_replaces_the_published_one(tmp_path):
 
 def test_the_published_operating_point_is_carried_through(tmp_path):
     dl, _ = _fake_hub(tmp_path)
-    assert w.resolve(None, None, download=True, downloader=dl).operating_point == (0.1, 0.7)
+    assert w.resolve(None, None, download=True, downloader=dl).operating_point == (0.1, 0.8)
     got = w.resolve(None, None, download=True, downloader=dl, encoder="sonar")
     assert got.operating_point == (0.1, 0.8)
 

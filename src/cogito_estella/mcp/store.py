@@ -471,10 +471,11 @@ class GraphStore:
         if requested != "lexical" and self.emb:
             self._drop_foreign_embeddings(self.extractor)
         lex, snap, edges = self._ask_snapshot(question, dense=requested != "lexical")
-        scores, name = self._score_sentences(question, lex, snap, requested, budget)
+        scores, name, conf = self._score_sentences(question, lex, snap, requested, budget)
         if not snap.ents and not any(s > 0 for s in scores):
             return f"no material for '{question}'"
-        head = f"entities: {', '.join(snap.ents) or '(none)'} · scorer={name}"
+        mark = f" · p={conf:.2f}" if conf is not None else ""
+        head = (f"entities: {', '.join(snap.ents) or '(none)'}{mark} · scorer={name}")
         body = [head, *self._fact_lines(edges, head, int(budget * FACT_SHARE))]
         sents = self._sentence_lines(snap.texts, snap.keys, scores, body, budget)
         return "\n".join(body + (["--"] + sents if sents else []))
@@ -507,22 +508,24 @@ class GraphStore:
         return "" if embedded >= len(self.docs) else f" ({embedded}/{len(self.docs)} docs)"
 
     def _score_sentences(self, question, lex, snap, requested, budget=ASK_BUDGET):
-        """(scores, scorer name). SONAR ranks the embedded sentences, the lexical ones rank
-        strictly after them: (cos + 1) / 2 floors near 0.5 while an overlap-free sentence
-        scores 0, so the two scales must never be compared row by row."""
+        """(scores, scorer name, confidence). SONAR ranks the embedded sentences, the lexical
+        ones rank strictly after them: (cos + 1) / 2 floors near 0.5 while an overlap-free
+        sentence scores 0, so the two scales must never be compared row by row. Confidence is
+        the learned model's own probability for its best sentence; the other scorers report
+        none, their numbers being an order and not a likelihood."""
         lexical = lex.score(question, snap.boost)
         if requested == "lexical" or not lex.n:
-            return lexical, "lexical"
+            return lexical, "lexical", None
         if requested == "learned":
-            learned = self._learned_scores(question, lex, lexical, snap, budget)
-            return (learned, "learned") if learned is not None \
-                else (lexical, "lexical (learned unavailable)")
+            learned, conf = self._learned_scores(question, lex, lexical, snap, budget)
+            return (learned, "learned", conf) if learned is not None \
+                else (lexical, "lexical (learned unavailable)", None)
         note = "lexical (dense unavailable)"
         if snap.mat is None:
-            return lexical, note
+            return lexical, note, None
         q = self._encode_question(question, width=snap.mat.shape[1])
         if q is None:
-            return lexical, note
+            return lexical, note, None
         sonar = SonarScorer(snap.mat, lambda _texts: q).score(question, snap.boost)
         out = []
         for i in range(lex.n):
@@ -530,7 +533,7 @@ class GraphStore:
                 out.append(lexical[i])
             else:                                  # the floor keeps `no material` reachable
                 out.append(DENSE_OFFSET + sonar[i] if sonar[i] >= DENSE_FLOOR else 0.0)
-        return out, f"dense{snap.cover}"
+        return out, f"dense{snap.cover}", None
 
     def _encode_question(self, question, width=None):
         """The question as a flat row, or None when no encoder answers for it or its width
@@ -593,17 +596,21 @@ class GraphStore:
         when no usable weights ship: the caller then keeps the lexical order.
 
         The returned values carry the ranking and nothing else - a logit has no floor, and the
-        fill stops at the first non-positive score."""
+        fill stops at the first non-positive score. The probability of the best candidate is
+        returned beside them: the order discards it, and a caller deciding whether to trust
+        the reply needs the likelihood, not the rank."""
         model = load_default()
         if model is None:
-            return None
+            return None, None
         cand, texts, ctx = self._candidates(question, lex, lexical, snap, budget, model)
         if not cand:
-            return None
+            return None, None
+        p = model.predict_proba(featurize(question, texts, ctx))   # monotonic in the score
         out = [0.0] * len(lexical)
-        for place, j in enumerate(rank(model.score(featurize(question, texts, ctx))), start=1):
+        order = rank(p)
+        for place, j in enumerate(order, start=1):
             out[cand[j]] = 1.0 / place
-        return out
+        return out, float(p[order[0]])
 
     def _feature_context(self, question, lex, lexical, snap, cand, model, avgdl=None):
         q_tokens = tokenize(question)

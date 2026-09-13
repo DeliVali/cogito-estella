@@ -988,3 +988,51 @@ def test_sentence_avgdl_is_the_mean_length_of_the_whole_universe(learned_store):
     assert st.sentence_avgdl() == pytest.approx(mean())
     st.ingest_text("Short.", "u")                       # the universe grew: the divisor follows
     assert st.sentence_avgdl() == pytest.approx(mean())
+
+
+# -- the header carries the model's confidence, not its ranking ---------------------
+
+def header(reply):
+    return reply.split("\n")[0]
+
+
+def test_ask_learned_reports_the_model_probability_for_its_best_sentence(learned_store, weighted):
+    weighted(only("lex_norm", 3.0), b=-1.0)
+    st = learned_store()
+    lex, snap, _ = st._ask_snapshot(LEARNED_Q, dense=False)
+    lexical = lex.score(LEARNED_Q, snap.boost)
+    _, conf = st._learned_scores(LEARNED_Q, lex, lexical, snap, 600)
+    assert 0.0 < conf < 1.0
+    assert f"· p={conf:.2f} ·" in header(st.ask(LEARNED_Q, scorer="learned"))
+
+
+def test_the_confidence_is_a_probability_not_the_reciprocal_rank(learned_store, weighted):
+    """The scores `ask` ranks with are 1/place, so their top is 1.0 for every question;
+    a caller weighing the reply needs the likelihood the ranking threw away."""
+    weighted(only("lex_norm", 3.0), b=-6.0)
+    low = header(learned_store().ask(LEARNED_Q, scorer="learned"))
+    weighted(only("lex_norm", 3.0), b=6.0)
+    high = header(learned_store().ask(LEARNED_Q, scorer="learned"))
+    p = lambda h: float(h.split("· p=")[1].split(" ·")[0])
+    assert p(low) < 0.5 < p(high)              # the bias moves it; a rank would not move
+    assert "p=1.00" not in low                 # and the top of a 1/place scale always would
+
+
+def test_the_scorer_stays_the_last_header_field(learned_store, weighted):
+    """Readers parse the scorer off the end of the header; the new field goes before it."""
+    weighted(only("lex_norm"))
+    assert header(learned_store().ask(LEARNED_Q, scorer="learned")).endswith("· scorer=learned")
+
+
+def test_only_the_learned_scorer_reports_a_probability(learned_store, weighted):
+    weighted(only("lex_norm"))
+    assert "p=" not in header(learned_store().ask(LEARNED_Q, scorer="lexical"))
+    dense = header(learned_store(encode=unit_vectors).ask(LEARNED_Q, scorer="dense"))
+    assert "p=" not in dense and "scorer=dense" in dense
+
+
+def test_a_reply_without_usable_weights_reports_no_probability(learned_store, monkeypatch,
+                                                               tmp_path):
+    monkeypatch.setenv(WEIGHTS_ENV, str(tmp_path / "absent.json"))
+    head = header(learned_store().ask(LEARNED_Q, scorer="learned"))
+    assert "p=" not in head and "learned unavailable" in head

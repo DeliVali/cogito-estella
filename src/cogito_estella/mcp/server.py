@@ -113,7 +113,9 @@ def build_server(store: GraphStore):
         sentences that answer it, ranked. `budget` caps the reply in tokens (100-4000,
         40 % facts / 60 % sentences). Sentences are shortlisted by IDF and ordered by the
         learned relevance scorer; use_dense=True ranks the block by encoder cosine instead
-        when the graph has embeddings (falls back to lexical with a note). Go deeper with `query`, `provenance` and `search` only
+        when the graph has embeddings (falls back to lexical with a note). The header's
+        `p=` is that scorer's probability for its best sentence: under ~0.3 the material is
+        probably not here, so ask again with a larger budget before answering. Go deeper with `query`, `provenance` and `search` only
         when this reply is not enough."""
         return t.ask(question, budget, use_dense, use_sonar)
 

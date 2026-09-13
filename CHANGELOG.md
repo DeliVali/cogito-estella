@@ -2,6 +2,11 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Confidence in the `ask` header** (`p=`): the learned scorer's own probability for the best sentence it found, reported before the scorer name so that field stays last. The ranking uses reciprocal rank, whose top is 1.0 for every question, so the likelihood was being discarded at the point a caller needs it. Measured over the 50 benchmark questions: median 0.64 where the answer was right, 0.46 where the agent abstained; a floor at 0.30 flags 5 of the 11 failures and 1 of the 39 correct replies. `p=` is absent for the lexical and dense scorers, whose numbers are an order and not a likelihood.
+
 ## [0.16.0] - 2026-09-11
 
 ### Added

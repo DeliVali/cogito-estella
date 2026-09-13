@@ -72,6 +72,22 @@ held-out sentences whose entity/relation combinations never appeared in training
 5,000 sentences held out under both protocols it scores 0.819 against 0.730 for the
 SONAR-space ensemble.
 
+A single `ask` is the cheapest route but abstains on some questions. The header's `p=`
+says how sure the scorer is, so a caller can escalate before answering; both escalation
+policies were measured on the same 50 questions, reusing the rows above:
+
+| policy | accuracy | context tokens / question | per correct answer |
+| :--- | :--- | :--- | :--- |
+| one `ask` at 600 | 0.78 | 588 | 754 (15.0×) |
+| `ask` → read the document when it abstains | 0.94 | 2,353 | 2,503 (4.5×) |
+| `ask` → `ask` at 1200 when `p` < 0.3 → document | 0.94 | 1,380 | 1,468 (7.7×) |
+| `ask` → document when `p` < 0.3 or it abstains | **0.96** | 2,486 | 2,590 (4.4×) |
+
+A second `ask` spends no LLM tokens, so escalating the budget is far cheaper than reading
+the document: it leaves 5 documents read out of 50 instead of 8. Sending low-confidence
+questions straight to the document instead is the accurate end of the trade: it answers
+0.96 and leaves two answers wrong-without-warning rather than three.
+
 ## Python
 
 ```python

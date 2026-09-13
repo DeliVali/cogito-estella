@@ -1,6 +1,6 @@
 [project]
 name = "cogito-estella"
-version = "0.16.0"
+version = "0.17.0"
 description = "Cogito Estella — Latent Graph Engine: non-autoregressive decoding of sentence embeddings into knowledge graphs"
 readme = "README.md"
 license = { text = "Apache-2.0" }

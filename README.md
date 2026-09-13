@@ -1,4 +1,4 @@
-# Cogito Estella (v0.16.0)
+# Cogito Estella (v0.17.0)
 
 Knowledge-graph memory for agents. A local model turns documents into `subject relation
 object` facts in one non-autoregressive pass (no LLM tokens), and the `cogito-mcp` server
@@ -126,8 +126,14 @@ back to its source sentence and character spans.
 
 Every checkpoint carries its encoder, revision, width and normalization; a checkpoint
 decoded in the wrong space stops the server, and a startup canary re-checks the encoder
-against shipped reference cosines. Earlier research heads (tool calls, code, open-vocab
-prose) remain on the Hub and are described in its model card.
+against shipped reference cosines.
+
+Three standalone research heads (not part of the default `ask`/`ingest` path) are also
+ported to the permissive encoder, each measured above its SONAR original: tool-call
+extraction (Triple F1 1.000), entity-conditioned prose on the 60-verb vocabulary
+(0.878 vs 0.827, 5-model ensemble, `CogitoGraphExtractor` loads it unchanged), and code
+call/import extraction (0.979 vs 0.777) — the last via a LoRA-adapted M2M-100 encoder,
+so it too carries no non-commercial term. Details and a loader in the Hub model card.
 
 ## Development
 

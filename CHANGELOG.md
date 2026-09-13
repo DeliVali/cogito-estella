@@ -2,10 +2,14 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
-## [Unreleased]
+## [0.17.0] - 2026-09-13
 
 ### Added
 - **Confidence in the `ask` header** (`p=`): the learned scorer's own probability for the best sentence it found, reported before the scorer name so that field stays last. The ranking uses reciprocal rank, whose top is 1.0 for every question, so the likelihood was being discarded at the point a caller needs it. Measured over the 50 benchmark questions: median 0.64 where the answer was right, 0.46 where the agent abstained; a floor at 0.30 flags 5 of the 11 failures and 1 of the 39 correct replies. `p=` is absent for the lexical and dense scorers, whose numbers are an order and not a likelihood.
+- **Three more heads ported to the permissive encoder, each beating its SONAR original.** All three are standalone assets (like their SONAR predecessors, they are not part of the `cogito-mcp` server or `CogitoGraphExtractor`'s default path) and change nothing about the default `ask`/`ingest` flow.
+  - **Candidates** (`cogito-prose-candidates-m2mpool{,-s2,-s3,-s4,-s5}.safetensors`, `vocab-candidates-m2mpool.json`): the same `CandidateGraphDecoder` architecture as the default ontology ensemble, retrained on the 60 raw-verb relation vocabulary and warm-started from the m2m100-pool trunk. 5-model ensemble, virgin-slice validated: Triple F1 **0.878** vs 0.827 for the SONAR original. Load with `CogitoGraphExtractor` unchanged (`threshold=0.1, adj_threshold=0.6`).
+  - **Tool-calls** (`cogito-toolcalls-m2mpool.safetensors`): the production `GraphDecoder` preset (K=24, d=448, V=8192, R=48) retrained on m2m100-pool embeddings of the same synthetic corpus. Held-out Triple F1 **1.000**, matching the SONAR original (the task is exact-by-construction).
+  - **Code** (`cogito-code-lora-m2mpool.safetensors`, `vocab-code-lora-m2mpool.json`): a frozen M2M-100 encoder is not enough for this task (a from-scratch attempt plateaued at 0.38 while training loss overfit to zero) — the encoder itself needed adapting, the same lever that carried SONAR's code head from 0.652 to 0.777. LoRA (r=32, α=64, dropout 0.1) on `q_proj/k_proj/v_proj/out_proj/fc1/fc2` across all 12 encoder layers, jointly fine-tuned with the pooling head and a fresh trunk+decoder, 6,000 optimizer steps at virtual batch 504 (matching the SONAR recipe's view count). Held-out Triple F1 **0.979** vs 0.777 for the SONAR+LoRA original — and unlike that original, this LoRA sits on an MIT encoder, not a CC-BY-NC one, so it carries no non-commercial term. Reference loader: `experiments/exp060_release_m2mpool/load_code_lora.py` (not imported by `cogito_estella`; copy it into your own pipeline).
 
 ## [0.16.0] - 2026-09-11
 

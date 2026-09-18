@@ -115,8 +115,12 @@ def build_server(store: GraphStore):
         learned relevance scorer; use_dense=True ranks the block by encoder cosine instead
         when the graph has embeddings (falls back to lexical with a note). The header's
         `p=` is that scorer's probability for its best sentence: under ~0.3 the material is
-        probably not here, so ask again with a larger budget before answering. Go deeper with `query`, `provenance` and `search` only
-        when this reply is not enough."""
+        probably not in this reply. Do not answer from a low-`p=` reply. First ask again
+        with a larger budget; if `p=` is still low, use `query`, `provenance` or `search`
+        before answering. Once any of them names the specific fact asked, even briefly or
+        in passing, state it — do not keep answering NOT FOUND once you have found it. If
+        they only surface something related without naming that fact, answer NOT FOUND;
+        do not substitute a nearby or similar-sounding fact for the one actually asked."""
         return t.ask(question, budget, use_dense, use_sonar)
 
     @mcp.tool()
@@ -138,7 +142,10 @@ def build_server(store: GraphStore):
 
     @mcp.tool()
     def search(term: str, limit: int = 8) -> str:
-        """Sentences mentioning a term: the text fallback when the graph has no fact."""
+        """Sentences containing every word of `term`, in any order: the text fallback
+        when the graph has no fact. Pass a few distinctive words, not a full question or
+        a phrase copied verbatim from the question — the source text rarely repeats a
+        multi-word phrase exactly."""
         return t.search(term, limit)
 
     @mcp.tool()

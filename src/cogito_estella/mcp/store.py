@@ -449,9 +449,14 @@ class GraphStore:
         return "\n".join(out)
 
     def search(self, term: str, limit: int = 8) -> str:
-        t = term.strip().lower()
+        """Every word of `term` must occur in the sentence; a multi-word query is an AND
+        of its words, not one contiguous phrase. A caller composing a natural multi-word
+        search rarely repeats the source text verbatim, so requiring the whole term as one
+        substring dropped sentences a single-word retry of the same search then found."""
+        words = [w for w in term.strip().lower().split() if w]
         hits = [f"{src} s{i}: \"{s}\"" for src, d in self.docs.items()
-                for i, (s, _) in enumerate(d["sents"]) if t in s.lower()]
+                for i, (s, _) in enumerate(d["sents"])
+                if words and all(w in s.lower() for w in words)]
         more = "" if len(hits) <= limit else f"\n+{len(hits) - limit} more (raise limit)"
         return ("\n".join(hits[:limit]) + more) if hits else f"no sentence mentions '{term}'"
 

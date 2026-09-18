@@ -2,6 +2,12 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`ask` commits to a fact it already found, and refuses to substitute a nearby one.** A real-agent probe on the 44 questions the learned scorer itself flagged as low-confidence (`p<0.3`) found two opposite failure patterns hiding behind the same low `p=`: the agent sometimes named the exact fact in its own reasoning and then answered NOT FOUND anyway (over-caution), and sometimes answered confidently with a *different*, nearby fact instead of the one asked (over-confidence). A single instruction can't fix both — "trust what you found" helps the first and worsens the second. `ask`'s description now says both halves: state the fact once `query`/`provenance`/`search` name it explicitly, but answer NOT FOUND rather than substitute something merely related. Measured on the same 12 real-agent failures (Bq branch, Haiku, `.cogito16`): 5/12 became correct, 1 became a safer failure (a wrong confident answer turned into an honest NOT FOUND), 1 became a worse one (a clean NOT FOUND turned into a wrong guess on a fact the graph does not have), 5 unchanged. Net gain, not a clean win — the trade documented in `experiments/exp062_permissive_modalities/confidence_probe{,_retest}/`.
+- **`search` matches every word of the query, not the whole phrase as one substring.** The same probe caught it directly: an agent's own multi-word search ("strided baseline") returned nothing while its single-word retry of the same idea ("strided") found real sentences — the source text almost never repeats a natural-language phrase verbatim. `search` now requires each word of `term` to occur somewhere in the sentence, in any order.
+
 ## [0.17.0] - 2026-09-13
 
 ### Added

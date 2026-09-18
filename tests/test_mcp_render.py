@@ -73,6 +73,15 @@ def test_provenance_retired_and_unknown(store):
 def test_search_and_entities_and_stats(store):
     assert 'The encoder maps text to a vector.' in store.search("encoder")
     assert store.search("qqq") == "no sentence mentions 'qqq'"
+
+
+def test_search_matches_words_that_co_occur_out_of_order(store):
+    """A caller composes a natural multi-word phrase; the sentence rarely repeats it
+    verbatim (measured: an agent's own multi-word search misses a sentence its own
+    single-word retry of the same search finds). Every word of the query must occur in
+    the sentence, not the whole query as one contiguous substring."""
+    assert 'The encoder maps text to a vector.' in store.search("vector encoder")
+    assert store.search("encoder rocket") == "no sentence mentions 'encoder rocket'"
     ents = store.entities()
     assert ents.startswith("sonar(") or "sonar(" in ents
     st = store.stats()

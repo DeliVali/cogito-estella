@@ -49,6 +49,52 @@ Flags: `--encoder sonar` for the SONAR-space heads (research only: `pip install
 for local weights; `--device`; `--no-download`. `COGITO_ASK_SCORER=lexical` keeps the
 plain IDF order.
 
+## Small models and short context
+
+A model can only use `ask` if it decides to call it, and small models often do not: in
+the bench below a 1.5B model called no tool at all, under any prompt, and a 3B model
+facing the full seven-tool surface never called `ask` and made up 12 answers out of 24.
+Two ways to get the documents to such a model:
+
+- **Pull, `--profile compact`.** `ask(question)` is the only tool (plus `ingest` when
+  nothing was indexed at startup); its description names the indexed files, and its
+  reply is one tagged passage per line under one plain-language line, which warns when
+  the scorer doubts its best passage. The server widens the budget once by itself when
+  it doubts, and sends the whole corpus when it fits the budget. The tool definitions
+  cost 96 tokens per model turn instead of 961.
+- **Push, the `context` prompt.** An MCP prompt, invoked by the client or the user,
+  never by the model: it returns the question preceded by the compact `ask` reply, to be
+  sent as the user message. It works with a model that calls no tools, and costs nothing
+  in the per-turn definitions.
+
+`--ingest PATH` (repeatable) indexes documents at startup, in the background, so the
+model never has to call `ingest`; reading tools wait for it rather than answer from a
+half-built index. `--budget` sets the token budget of one reply.
+
+```json
+{"mcpServers": {"cogito": {"command": "cogito-mcp",
+  "args": ["--dir", ".cogito", "--profile", "compact", "--ingest", "docs"]}}}
+```
+
+Measured on CPU with Qwen2.5-Instruct (Q4_K_M, temperature 0): 22 questions whose exact
+answer is in this repository's README and CHANGELOG (9.4k tokens, the cost of reading
+both before any question) plus 2 with no answer; `list_files`, `read_file` and `grep`
+are available in every branch:
+
+| branch | 1.5B right / wrong | 3B right / wrong | 3B calls `ask` | prompt tokens / question (3B) |
+| :--- | :--- | :--- | :--- | :--- |
+| native tools only | 0 / 0 | 0 / 0 | — | 502 |
+| + full profile | 1 / 4 | 0 / 12 | 0 of 24 | 1,484 |
+| + compact profile | 0 / 2 | 11 / 1 | 17 of 24 | 1,681 |
+| native + `context` push | 13 / 5 | 6 / 4 | — | 1,287 |
+
+One run per branch: a difference of three answers is within run-to-run noise (the 3B
+push branch moved from 9 to 6 between two runs that differed only in line formatting).
+The 1.5B never calls a tool, so its compact row measures nothing new and push is its
+only route. The 3B under push declines passages that do hold the answer; the 1.5B misses
+5 of the 19 answers that reach it, and 3 answers never reach it (a version number that
+lives in a section heading, a table cell, a short README line).
+
 ## Measured
 
 50 questions over five arXiv papers, answered by Claude Code headless (Haiku) under the
@@ -143,7 +189,7 @@ uv run python -m spacy download en_core_web_sm
 uv run pytest tests/
 ```
 
-573 tests with every extra installed; modules that need the `[sonar]` extra and the tests
+596 tests with every extra installed; modules that need the `[sonar]` extra and the tests
 that load a real encoder on CUDA skip themselves without them. Package layout:
 `model/` (decoder heads), `encoders/` (encoder contract, adapters, pooling, canary),
 `mcp/` (store, readers, scorers, server), `integrations/` (the extractor). Training data,

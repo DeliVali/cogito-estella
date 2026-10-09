@@ -225,7 +225,7 @@ def test_main_missing_dependency_at_weight_resolution_exits_with_install_hint(mo
 def test_main_missing_mcp_sdk_exits_with_install_hint(monkeypatch, tmp_path):
     import cogito_estella.mcp.server as srv
 
-    def boom(store):
+    def boom(store, *_a, **_k):
         raise ImportError("No module named 'mcp'", name="mcp")
     monkeypatch.setattr(srv, "resolve", lambda *a, **k: _resolved())
     monkeypatch.setattr(srv, "ensure_spacy_model", lambda **k: None)
@@ -240,7 +240,7 @@ def test_the_startup_line_names_the_encoder_and_its_revision(monkeypatch, tmp_pa
     import cogito_estella.mcp.server as srv
     from cogito_estella.encoders import encoder_revision
 
-    def boom(store):
+    def boom(store, *_a, **_k):
         raise ImportError("No module named 'mcp'", name="mcp")
     monkeypatch.setattr(srv, "resolve", lambda *a, **k: _resolved())
     monkeypatch.setattr(srv, "ensure_spacy_model", lambda **k: None)
@@ -258,7 +258,7 @@ def test_the_startup_line_does_not_guess_the_encoder_of_explicit_checkpoints(
     default here would name the wrong semantic space."""
     import cogito_estella.mcp.server as srv
 
-    def boom(store):
+    def boom(store, *_a, **_k):
         raise ImportError("No module named 'mcp'", name="mcp")
     monkeypatch.setattr(srv, "resolve", lambda *a, **k: _resolved(["a.pt"], encoder=None))
     monkeypatch.setattr(srv, "ensure_spacy_model", lambda **k: None)
@@ -424,3 +424,203 @@ def test_main_refuses_an_unreadable_scorer_knob_before_it_loads_anything(monkeyp
     with pytest.raises(SystemExit) as exc:
         srv.main(["--dir", str(tmp_path)])
     assert SCORER_ENV in str(exc.value) and str(exc.value).startswith("cogito-mcp: ")
+
+
+# -- compact profile: the surface for models with little context ------------------------
+
+FILLER = " ".join(f"Gardens need water on day {i} of the season." for i in range(120))
+BIG = FILLER + " The encoder maps text to a vector."
+
+
+@pytest.fixture
+def compact(fake_extractor, tmp_path):
+    return Tools(GraphStore(extractor=fake_extractor(TRIPLES), path=tmp_path / "graph.json"),
+                 profile="compact")
+
+
+def test_an_unknown_profile_is_refused(fake_extractor):
+    with pytest.raises(ValueError, match="profile"):
+        Tools(GraphStore(extractor=fake_extractor(TRIPLES)), profile="tiny")
+
+
+def test_compact_ask_returns_the_whole_corpus_when_it_fits_the_budget(compact):
+    compact.ingest(DOC)
+    out = compact.ask("What is decoded by SONAR?")
+    assert out.splitlines() == ["All of the indexed text fits here (1 document):",
+                                "[text1] The generated concepts are decoded by SONAR.",
+                                "[text1] The encoder maps text to a vector."]
+
+
+def test_compact_ask_still_says_nothing_matches_an_unrelated_question(compact):
+    compact.ingest(DOC)
+    assert compact.ask("quantum chromodynamics") == \
+        "Nothing in the indexed documents matches this question."
+
+
+def test_compact_ask_ranks_sentences_without_graph_jargon(compact):
+    compact.ingest(BIG)
+    out = compact.ask("What does the encoder map text to?")
+    lines = out.splitlines()
+    assert lines[0].startswith(("From the indexed documents", "Low confidence"))
+    assert lines[1] == "[text1] The encoder maps text to a vector."
+    assert all(line.startswith("[text1] ") for line in lines[1:])
+    assert "entities:" not in out and "\n--\n" not in out and "#" not in out
+    from cogito_estella.mcp.tokens import ntok
+    assert ntok(out) <= 1200 and compact.store.ledger.calls["ask"] == 1
+
+
+@pytest.mark.parametrize("conf, budgets", [(0.1, [600, 1200]), (0.9, [600]), (None, [600])])
+def test_compact_ask_widens_once_in_the_same_call_when_the_scorer_doubts(compact, monkeypatch,
+                                                                         conf, budgets):
+    seen = []
+    monkeypatch.setattr(compact.store, "_ask",
+                        lambda q, budget, scorer, style: seen.append(budget) or ("ok", conf))
+    assert compact.ask("q") == "ok"
+    assert seen == budgets
+
+
+def test_compact_ingest_is_one_summary_line_per_call(compact, tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "a.txt").write_text(DOC)
+    (tmp_path / "docs" / "b.md").write_text("The decoder maps a vector to text.")
+    first = compact.ingest(str(tmp_path / "docs"))
+    assert first.startswith("indexed 2 documents (2 ingested), ") and "\n" not in first
+    assert compact.ingest(str(tmp_path / "docs")).startswith("indexed 2 documents (2 unchanged)")
+
+
+def test_compact_ingest_caps_its_error_lines():
+    from cogito_estella.mcp.server import _ingest_summary
+    out = _ingest_summary([f"source=f{i} error=unreadable" for i in range(9)])
+    assert out.splitlines() == ["nothing indexed", *[f"source=f{i} error=unreadable"
+                                                     for i in range(5)], "+4 more errors"]
+
+
+def _tool_list(server):
+    return {t.name: t for t in server._tool_manager.list_tools()}
+
+
+def test_the_compact_server_offers_ask_alone_when_the_corpus_was_indexed_at_startup(compact):
+    server = build_server(compact.store, compact, ["README.md", "docs/ops.md"],
+                          indexed_at_startup=True)
+    tools = _tool_list(server)
+    assert set(tools) == {"ask"}
+    assert set(tools["ask"].parameters["properties"]) == {"question"}
+    assert "(README.md, docs/ops.md)" in tools["ask"].description
+
+
+def test_the_compact_server_keeps_ingest_when_nothing_was_indexed(compact):
+    tools = _tool_list(build_server(compact.store, compact))
+    assert set(tools) == {"ask", "ingest"}
+    assert "indexed with `ingest`" in tools["ask"].description
+
+
+def test_the_compact_surface_costs_a_fraction_of_the_full_one(tools, compact):
+    build_server(tools.store)
+    full = tools.store.ledger.schema_tokens
+    build_server(compact.store, compact, ["a.md"], indexed_at_startup=True)
+    assert 0 < compact.store.ledger.schema_tokens * 5 < full
+    assert f"tool_definitions_tokens={full}" in tools.stats()
+
+
+def test_corpus_label_names_the_first_sources_and_counts_the_rest():
+    from cogito_estella.mcp.server import corpus_label
+    assert corpus_label([]) == ""
+    assert corpus_label([f"d{i}.md" for i in range(8)]) == \
+        "d0.md, d1.md, d2.md, d3.md, d4.md, d5.md and 2 more"
+
+
+def test_the_operator_budget_is_the_default_of_the_full_ask(fake_extractor):
+    store = GraphStore(extractor=fake_extractor(TRIPLES))
+    ask = _tool_list(build_server(store, Tools(store, budget=1200)))["ask"]
+    assert ask.parameters["properties"]["budget"]["default"] == 1200
+
+
+def test_parse_args_reads_the_small_model_flags():
+    ns = parse_args([])
+    assert ns.profile == "full" and ns.ingest is None and ns.budget == 600
+    ns = parse_args(["--profile", "compact", "--ingest", "docs", "--ingest", "README.md",
+                     "--budget", "400"])
+    assert ns.profile == "compact" and ns.ingest == [Path("docs"), Path("README.md")]
+    assert ns.budget == 400
+    with pytest.raises(SystemExit):
+        parse_args(["--profile", "tiny"])
+
+
+# -- startup indexing: the model never has to call `ingest` -----------------------------
+
+def test_startup_indexing_runs_in_the_background_and_ask_answers_after_it(compact, tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "a.txt").write_text(DOC)
+    compact.index_in_background([tmp_path / "docs"]).join(timeout=30)
+    assert compact.ask("What is decoded by SONAR?").startswith("All of the indexed text")
+
+
+def test_reading_tools_wait_for_the_startup_indexing(compact, monkeypatch, tmp_path):
+    import threading
+
+    import cogito_estella.mcp.server as srv
+    gate = threading.Event()
+    real = compact.store.ingest_path
+    monkeypatch.setattr(compact.store, "ingest_path", lambda p: gate.wait(10) and real(p))
+    monkeypatch.setattr(srv, "INDEX_WAIT", 0.05)
+    (tmp_path / "a.txt").write_text(DOC)
+    th = compact.index_in_background([tmp_path / "a.txt"])
+    assert compact.ask("What is decoded by SONAR?").startswith("still indexing")
+    assert compact.search("SONAR").startswith("still indexing")
+    gate.set()
+    th.join(timeout=30)
+    assert "decoded by SONAR" in compact.ask("What is decoded by SONAR?")
+
+
+def test_a_failed_startup_indexing_is_reported_instead_of_an_empty_answer(compact, monkeypatch):
+    def boom(_p):
+        raise RuntimeError("weights missing")
+    monkeypatch.setattr(compact.store, "ingest_path", boom)
+    compact.index_in_background(["docs"]).join(timeout=30)
+    assert compact.ask("anything") == \
+        "the documents could not be indexed (RuntimeError: weights missing)"
+
+
+def test_source_names_match_what_ingestion_will_call_the_documents(tmp_path):
+    from cogito_estella.mcp.readers import iter_sources, source_names
+    (tmp_path / "d" / "sub").mkdir(parents=True)
+    (tmp_path / "d" / "a.md").write_text("x")
+    (tmp_path / "d" / "sub" / "b.txt").write_text("y")
+    (tmp_path / "d" / "skip.py").write_text("z")
+    assert source_names(tmp_path / "d") == [n for n, _ in iter_sources(tmp_path / "d")] \
+        == ["a.md", "sub/b.txt"]
+    assert source_names(tmp_path / "d" / "a.md") == [str(tmp_path / "d" / "a.md")]
+    assert source_names(tmp_path / "missing") == []
+
+
+# -- push: the client sends the context, the model never has to decide ---------------------
+
+@pytest.mark.parametrize("profile", ["full", "compact"])
+def test_the_context_prompt_puts_the_compact_reply_before_the_question(fake_extractor, profile):
+    import asyncio
+    t = Tools(GraphStore(extractor=fake_extractor(TRIPLES)), profile=profile)
+    t.ingest(DOC)
+    server = build_server(t.store, t)
+    assert [p.name for p in server._prompt_manager.list_prompts()] == ["context"]
+    got = asyncio.run(server.get_prompt("context", {"question": "What is decoded by SONAR?"}))
+    text = got.messages[0].content.text
+    assert got.messages[0].role == "user"
+    assert text.startswith("Context from the indexed documents for this question:\n"
+                           "All of the indexed text fits here (1 document):\n")
+    assert text.endswith("\n\nQuestion: What is decoded by SONAR?")
+    assert t.store.ledger.calls["context"] == 1
+
+
+def test_the_context_prompt_is_not_part_of_the_per_turn_definitions(compact):
+    build_server(compact.store, compact, ["a.md"], indexed_at_startup=True)
+    with_prompt = compact.store.ledger.schema_tokens
+    from cogito_estella.mcp.server import schema_tokens
+    assert schema_tokens(build_server(compact.store, compact, ["a.md"],
+                                      indexed_at_startup=True)) == with_prompt
+    assert with_prompt < 120
+
+
+def test_a_compact_line_is_one_tagged_passage_even_for_a_multiline_sentence(compact):
+    compact.ingest("| table | row |\n| spans | lines |\n\nThe encoder maps text to a vector.")
+    out = compact.ask("What does the encoder map text to?")
+    assert all(line.startswith("[text1] ") for line in out.splitlines()[1:])

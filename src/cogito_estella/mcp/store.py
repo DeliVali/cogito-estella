@@ -42,6 +42,15 @@ ASK_MAX_IDS = 8                 # ids per fact line in `ask`: one hub group must
 DENSE_COS_FLOOR = 0.2           # below this cosine a sentence is not about the question
 DENSE_FLOOR = (DENSE_COS_FLOOR + 1.0) / 2.0        # the same floor on the scorer's [0, 1] scale
 DENSE_OFFSET = 1.0              # embedded rows rank above lexical ones: no shared origin
+LOW_CONFIDENCE = 0.3            # learned p= under which the reply probably misses the answer
+ASK_STYLES = ("full", "compact")
+# compact replies speak plain language at the point of use: a small model follows a line
+# placed next to the evidence, not a policy buried in a tool description
+COMPACT_HEAD = "From the indexed documents, best match first:"
+COMPACT_LOW = ("Low confidence: these lines may not answer the question. If none of them "
+               "states the answer, reply that the documents do not say.")
+COMPACT_WHOLE = "All of the indexed text fits here ({docs} document{s}):"
+COMPACT_NONE = "Nothing in the indexed documents matches this question."
 SONAR_COS_FLOOR, SONAR_FLOOR, SONAR_OFFSET = DENSE_COS_FLOOR, DENSE_FLOOR, DENSE_OFFSET   # older names
 # question words too generic to be worth a graph hop
 _GENERIC = ("model models paper use uses used result results work approach method "
@@ -78,6 +87,16 @@ class _StdoutWire:
 
 
 _quiet = _StdoutWire().quiet               # every stdout redirect in this process goes here
+
+
+def _full_line(src: str, si: int, text: str) -> str:
+    return f'{src} s{si}: "{text}"'
+
+
+def _compact_line(src: str, _si: int, text: str) -> str:
+    # one passage per line, every line tagged: a sentence spanning a markdown table or a
+    # bullet list would otherwise continue on untagged lines
+    return f"[{src}] {' '.join(text.split())}"
 
 
 @dataclass
@@ -464,26 +483,65 @@ class GraphStore:
         ents = self.top_entities(limit, prefix)
         return ", ".join(f"{e}({len(self.adj[e])})" for e in ents) or "(empty graph)"
 
-    def ask(self, question: str, budget: int = ASK_BUDGET, scorer: str = "lexical") -> str:
+    def ask(self, question: str, budget: int = ASK_BUDGET, scorer: str = "lexical",
+            style: str = "full") -> str:
         """One call from a question to the facts and sentences that answer it, within budget.
         IDF is the primary engine; `dense` (older name `sonar`) and `learned` re-rank the
-        sentence block only when asked for."""
+        sentence block only when asked for. `compact` drops the graph facts and the scorer
+        jargon: sentences tagged by source under one plain-language line."""
+        return self._ask(question, budget, scorer, style)[0]
+
+    def ask_compact(self, question: str, budget: int = ASK_BUDGET, scorer: str = "lexical",
+                    widen_to: int | None = None) -> str:
+        """`ask` in the compact style, widened once inside the same call when the learned
+        scorer doubts its best sentence. The measured escalation ("ask again at 1200 when
+        p < 0.3") is a policy a small model does not follow; here it costs no extra turn."""
+        text, conf = self._ask(question, budget, scorer, "compact")
+        if widen_to and widen_to > budget and conf is not None and conf < LOW_CONFIDENCE:
+            text, _ = self._ask(question, widen_to, scorer, "compact")
+        return text
+
+    def _ask(self, question, budget, scorer, style) -> tuple[str, float | None]:
         requested = str(scorer).strip().lower()
         requested = SCORER_ALIASES.get(requested, requested)
         if requested not in ASK_SCORERS:           # a stray value must not pick a scorer by luck
             raise ValueError(f"unknown scorer {str(scorer).strip()[:24]!r}; "
                              f"use one of: {', '.join(ASK_SCORERS)}")
+        if style not in ASK_STYLES:
+            raise ValueError(f"unknown style {str(style)[:24]!r}; use one of: "
+                             f"{', '.join(ASK_STYLES)}")
         if requested != "lexical" and self.emb:
             self._drop_foreign_embeddings(self.extractor)
         lex, snap, edges = self._ask_snapshot(question, dense=requested != "lexical")
         scores, name, conf = self._score_sentences(question, lex, snap, requested, budget)
         if not snap.ents and not any(s > 0 for s in scores):
-            return f"no material for '{question}'"
+            return (COMPACT_NONE if style == "compact" else f"no material for '{question}'"), None
+        if style == "compact":
+            whole = self._whole_corpus(snap, budget)
+            if whole is not None:
+                return whole, None
+            low = conf is not None and conf < LOW_CONFIDENCE
+            body = [COMPACT_LOW if low else COMPACT_HEAD]
+            sents = self._sentence_lines(snap.texts, snap.keys, scores, body, budget, sep=[],
+                                         fmt=_compact_line)
+            return ("\n".join(body + sents) if sents else COMPACT_NONE), conf
         mark = f" · p={conf:.2f}" if conf is not None else ""
         head = (f"entities: {', '.join(snap.ents) or '(none)'}{mark} · scorer={name}")
         body = [head, *self._fact_lines(edges, head, int(budget * FACT_SHARE))]
         sents = self._sentence_lines(snap.texts, snap.keys, scores, body, budget)
-        return "\n".join(body + (["--"] + sents if sents else []))
+        return "\n".join(body + (["--"] + sents if sents else [])), conf
+
+    def _whole_corpus(self, snap, budget) -> str | None:
+        """Every sentence in document order when the whole corpus fits the budget, else None.
+        Below that size ranking can only drop text the caller could have had for the same
+        tokens: on a 1.9k-token document one `ask` saved 1.3x and could miss the answer."""
+        if not snap.texts or self.ledger.raw_tokens > budget:
+            return None
+        docs = len(snap.doc_sents)
+        text = "\n".join([COMPACT_WHOLE.format(docs=docs, s="" if docs == 1 else "s"),
+                          *(_compact_line(src, si, t)
+                            for (src, si), t in zip(snap.keys, snap.texts))])
+        return text if ntok(text) <= budget else None
 
     def _ask_snapshot(self, question, dense: bool):
         """(lexical scorer, snapshot, retrieved edges). Read under the lock, scored outside it:
@@ -679,18 +737,20 @@ class GraphStore:
                 out += [DIVIDER, *tail]
         return out
 
-    def _sentence_lines(self, texts, keys, scores, body, budget) -> list:
+    def _sentence_lines(self, texts, keys, scores, body, budget, sep=("--",),
+                        fmt=None) -> list:
         out: list[str] = []
         seen: set[str] = set()
         skips = 0
+        fmt = fmt or _full_line
         for i in rank(scores):
             if scores[i] <= 0:
                 break
             if texts[i] in seen:
                 continue
             src, si = keys[i]
-            line = f'{src} s{si}: "{texts[i]}"'
-            if ntok("\n".join(body + ["--", *out, line])) > budget:
+            line = fmt(src, si, texts[i])
+            if ntok("\n".join(body + [*sep, *out, line])) > budget:
                 skips += 1                         # oversize line: shorter ones may still fit
                 if skips >= ASK_MAX_SKIPS:
                     break
@@ -717,6 +777,8 @@ class GraphStore:
             f"full_graph_tokens={full}  (compression {L.raw_tokens / max(full, 1):.1f}x)",
             f"tokens_served_to_agent={L.served} over {calls} calls: {by}",
             f"savings_vs_read={L.raw_tokens / max(L.served, 1):.1f}x",
+            *([f"tool_definitions_tokens={L.schema_tokens}  (re-sent with every model turn)"]
+              if L.schema_tokens else []),
             gf,
         ])
 

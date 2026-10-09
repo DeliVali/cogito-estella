@@ -102,6 +102,18 @@ def _read_file(path: Path) -> str:
                       f"supported: {', '.join(sorted(SUFFIXES))}")
 
 
+def _dir_files(path: Path) -> list[Path]:
+    return sorted(p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in SUFFIXES)
+
+
+def source_names(path: Path) -> list[str]:
+    """The source names `iter_sources` would yield for `path`, without reading any file."""
+    path = Path(path)
+    if path.is_dir():
+        return [p.relative_to(path).as_posix() for p in _dir_files(path)]
+    return [str(path)] if path.is_file() and path.suffix.lower() in SUFFIXES else []
+
+
 def iter_sources(path: Path):
     """Yield (source_name, text) or (source_name, ReaderError) per document.
     A directory is walked recursively in sorted order, names relative to it;
@@ -110,8 +122,7 @@ def iter_sources(path: Path):
     including an unsupported suffix or a missing path on a single-file call."""
     path = Path(path)
     if path.is_dir():
-        files = sorted(p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in SUFFIXES)
-        for p in files:
+        for p in _dir_files(path):
             name = p.relative_to(path).as_posix()
             try:
                 yield name, _read_file(p)

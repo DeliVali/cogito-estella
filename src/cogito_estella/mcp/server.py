@@ -3,6 +3,7 @@ go deeper with query/provenance/search. Every tool reply is charged to the token
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -12,7 +13,6 @@ from collections import Counter
 from pathlib import Path
 
 from cogito_estella.encoders import ENCODERS, EncoderMismatch, encoder_revision
-from cogito_estella.encoders.pooling import PoolWeightsError
 from cogito_estella.mcp.readers import source_names
 from cogito_estella.mcp.store import ASK_SCORERS, SCORER_ALIASES, GraphStore, TextOnlyExtractor
 from cogito_estella.mcp.tokens import ntok
@@ -160,11 +160,15 @@ class Tools:
 
     # -- tools -------------------------------------------------------------------------
     def ask(self, question: str, budget: int | None = None, use_dense: bool = False,
-            use_sonar: bool = False) -> str:
+            use_sonar: bool = False, deep: bool = False) -> str:
         budget = self.budget if budget is None else _clamp_budget(budget)
         wait = self._not_ready()
         if wait:
             return self._charge("ask", wait)
+        if deep:
+            why = self.store.use_full()
+            if why:
+                return self._charge("ask", why)
         scorer = "dense" if (use_dense or use_sonar) else self.scorer   # use_sonar: older name
         if self.profile == "compact":
             return self._charge("ask", self.store.ask_compact(
@@ -264,6 +268,41 @@ def serve_stdio(server, on_claimed=None) -> None:
     anyio.run(run)
 
 
+def parse_bind(spec: str) -> tuple[str, int]:
+    host, _, port = spec.rpartition(":")
+    if not port.isdigit() or not 0 < int(port) < 65536:
+        raise ValueError(f"--http expects [HOST:]PORT, got {spec!r}")
+    return host or "127.0.0.1", int(port)
+
+
+def register_rest(mcp, t: Tools) -> None:
+    """`POST /ask` and `POST /context` with `{"question": "...", "budget": 600}`, text out:
+    the same replies as the tools, for a harness that only speaks HTTP."""
+    import anyio
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    def route(name, fn):
+        async def handler(request):
+            try:
+                body = await request.json()
+                question = body["question"]
+                if not isinstance(question, str) or not question.strip():
+                    raise ValueError
+                kwargs = {"budget": body["budget"]} if "budget" in body and name == "ask" else {}
+            except (ValueError, KeyError, TypeError):
+                return JSONResponse({"error": 'send {"question": "..."}'}, status_code=400)
+            return PlainTextResponse(await anyio.to_thread.run_sync(
+                lambda: fn(question, **kwargs)))
+        mcp.custom_route(f"/{name}", methods=["POST"], name=name)(handler)
+
+    route("ask", t.ask)
+    route("context", t.context)
+
+    @mcp.custom_route("/health", methods=["GET"], name="health")
+    async def health(request):
+        return PlainTextResponse("ok")
+
+
 def _register_context(mcp, t: Tools) -> None:
     """A prompt, not a tool: the client or the user invokes it, never the model, and it is
     not part of the definitions re-sent on every model turn."""
@@ -314,7 +353,7 @@ def _register_full(mcp, t: Tools) -> None:
 
     @mcp.tool()
     def ask(question: str, budget: int = default_budget, use_dense: bool = False,
-            use_sonar: bool = False) -> str:
+            use_sonar: bool = False, deep: bool = False) -> str:
         """Start here for any question: graph facts, then a '--' line, then the source
         sentences that answer it, ranked. `budget` caps the reply in tokens (100-4000,
         40 % facts / 60 % sentences). Sentences are shortlisted by IDF and ordered by the
@@ -326,8 +365,10 @@ def _register_full(mcp, t: Tools) -> None:
         before answering. Once any of them names the specific fact asked, even briefly or
         in passing, state it — do not keep answering NOT FOUND once you have found it. If
         they only surface something related without naming that fact, answer NOT FOUND;
-        do not substitute a nearby or similar-sounding fact for the one actually asked."""
-        return t.ask(question, budget, use_dense, use_sonar)
+        do not substitute a nearby or similar-sounding fact for the one actually asked.
+        deep=True loads the graph model on the first use (slow once, then kept) and adds
+        facts and encoder ranking to documents indexed without it."""
+        return t.ask(question, budget, use_dense, use_sonar, deep)
 
     @mcp.tool()
     def ingest(path_or_text: str, source: str = "") -> str:
@@ -366,7 +407,15 @@ def _register_full(mcp, t: Tools) -> None:
 
 
 def parse_args(argv=None) -> argparse.Namespace:
-    ap = argparse.ArgumentParser(prog="cogito-mcp", description=INSTRUCTIONS)
+    ap = argparse.ArgumentParser(
+        prog="cogito-mcp", description=INSTRUCTIONS,
+        epilog="Quick start: `cogito-mcp docs/` indexes docs/ and serves the small-session "
+               "setup (--lite --profile compact). Add --full for the graph model.")
+    ap.add_argument("paths", nargs="*", type=Path, metavar="PATH",
+                    help="documents to index and serve; with any PATH the defaults become "
+                         "--lite --profile compact (use --full for the graph model)")
+    ap.add_argument("--full", action="store_true",
+                    help="with PATH: load the graph model instead of the lite index")
     ap.add_argument("--dir", type=Path, default=Path(".cogito"),
                     help="project directory holding graph.json (default: ./.cogito)")
     ap.add_argument("--checkpoint", action="append", help="decoder checkpoint (repeatable)")
@@ -378,9 +427,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="learned pooling weights for m2m100-pool (default: the published file)")
     ap.add_argument("--no-download", dest="download", action="store_false",
                     help="never download weights or the spaCy model")
-    ap.add_argument("--profile", choices=PROFILES, default="full",
+    ap.add_argument("--profile", choices=PROFILES, default=None,
                     help="tool surface: full (seven tools) or compact (`ask` alone, one "
-                         "argument, plain replies; for models with little context)")
+                         "argument, plain replies; for models with little context); default "
+                         "compact with PATH, full without")
     ap.add_argument("--ingest", action="append", type=Path, default=None, metavar="PATH",
                     help="file or directory indexed at startup, in the background "
                          "(repeatable); the model then never has to call `ingest`")
@@ -388,10 +438,21 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="index sentences only: no graph model is loaded or downloaded, so "
                          "the server starts at once; `ask` keeps its learned ranking, the "
                          "graph tools have no facts for documents indexed this way")
+    ap.add_argument("--http", metavar="[HOST:]PORT",
+                    help="serve over HTTP instead of stdio, for any client that cannot spawn "
+                         "a process: MCP at /mcp, plus POST /ask and /context with "
+                         '{"question": "..."} (HOST defaults to 127.0.0.1; there is no '
+                         "authentication, so keep it on localhost or behind your own proxy)")
     ap.add_argument("--budget", type=int, default=600,
                     help=f"token budget of one `ask` reply ({ASK_BUDGET_MIN}-{ASK_BUDGET_MAX}; "
                          "default 600)")
-    return ap.parse_args(argv)
+    ns = ap.parse_args(argv)
+    if ns.paths:                     # one positional path is the whole setup
+        ns.ingest = [*(ns.ingest or []), *ns.paths]
+        ns.lite = ns.lite or not ns.full
+        ns.profile = ns.profile or "compact"
+    ns.profile = ns.profile or "full"
+    return ns
 
 
 def build_extractor(weights, ns: argparse.Namespace):
@@ -400,6 +461,7 @@ def build_extractor(weights, ns: argparse.Namespace):
     `ns.encoder` (not the resolved name) is forwarded: an unset flag lets legacy
     checkpoints keep their own encoder, and their space is announced here, once the
     checkpoints have decided it."""
+    from cogito_estella.encoders.pooling import PoolWeightsError  # torch: full mode only
     from cogito_estella.integrations import llamaindex_connector as connector
     point = weights.operating_point or (None, None)
     try:
@@ -419,28 +481,68 @@ def _encoder_line(encoder: str) -> str:
     return f"encoder={encoder} revision={encoder_revision(encoder)}"
 
 
+_FULL_ONLY = ("torch", "transformers", "huggingface_hub", "sentencepiece", "safetensors")
+
+
 def _exit_missing_dependency(exc: ImportError) -> None:
-    sys.exit(f"cogito-mcp: missing optional dependency {exc.name}; "
-             "install with: pip install 'cogito-estella[mcp]'")
+    name = (exc.name or "").split(".")[0]
+    fix = ("pip install 'cogito-estella[full]' (the graph model; or run with --lite)"
+           if name in _FULL_ONLY else "pip install -U cogito-estella")
+    sys.exit(f"cogito-mcp: missing dependency {exc.name}; install with: {fix}")
+
+
+def _query(kind: str, argv: list[str]) -> int:
+    """`cogito-estella ask|context PATH... "question"`: the reply on stdout, for a harness
+    in any language that can run a command. The index is kept in ./.cogito between calls."""
+    if len(argv) < 2:
+        print(f"usage: cogito-estella {kind} PATH [PATH ...] \"question\"", file=sys.stderr)
+        return 2
+    *paths, question = argv
+    missing = [p for p in paths if not Path(p).exists()]
+    if missing:
+        print(f"cogito-estella: not found: {', '.join(missing)}", file=sys.stderr)
+        return 2
+    from cogito_estella.estella import Estella
+    docs = Estella(*paths, save_to=".cogito")
+    print(docs.ask(question) if kind == "ask" else docs.context(question))
+    return 0
 
 
 def main(argv=None) -> None:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "setup":
+        from cogito_estella.setup import run
+        sys.exit(run(argv[1:]))
+    if argv and argv[0] in ("ask", "context"):
+        sys.exit(_query(argv[0], argv[1:]))
     ns = parse_args(argv)
     try:                                       # a knob that names no scorer stops the run here,
         resolve_scorer()                       # before a model load makes the failure expensive
     except ValueError as exc:
         sys.exit(f"cogito-mcp: {exc}")
+    if not ns.lite and importlib.util.find_spec("torch") is None:
+        sys.exit("cogito-mcp: the graph model needs: pip install 'cogito-estella[full]'; "
+                 "or run with --lite (or give a PATH) to serve without it")
     try:
         weights = None if ns.lite else resolve(ns.checkpoint, ns.vocab, download=ns.download,
                                                encoder=ns.encoder, pool=ns.pool)
-        ensure_spacy_model(download=ns.download)
+        if not ns.lite:                        # the lite index needs no spaCy model
+            ensure_spacy_model(download=ns.download)
     except WeightsError as exc:
         sys.exit(f"cogito-mcp: {exc}")
     except ImportError as exc:
         _exit_missing_dependency(exc)
 
+    def full_factory():                        # lite sessions load it on `deep`, once
+        w = weights or resolve(ns.checkpoint, ns.vocab, download=ns.download,
+                               encoder=ns.encoder, pool=ns.pool)
+        ensure_spacy_model(download=ns.download)
+        return build_extractor(w, ns)
+
     factory = TextOnlyExtractor if ns.lite else (lambda: build_extractor(weights, ns))
-    store = GraphStore(extractor_factory=factory, path=ns.dir / "graph.json")
+    has_torch = importlib.util.find_spec("torch") is not None
+    store = GraphStore(extractor_factory=factory, path=ns.dir / "graph.json",
+                       full_factory=full_factory if ns.lite and has_torch else None)
     store.load()
     # Explicit legacy checkpoints resolve their own encoder inside the extractor, which
     # is built lazily: name it there rather than guessing the default here.
@@ -455,6 +557,21 @@ def main(argv=None) -> None:
     corpus = sorted(set(store.docs) | {n for p in paths for n in source_names(p)})
     try:
         server = build_server(store, tools, corpus, indexed_at_startup=bool(paths))
+        if ns.http:
+            try:
+                host, port = parse_bind(ns.http)
+            except ValueError as exc:
+                sys.exit(f"cogito-mcp: {exc}")
+            register_rest(server, tools)
+            if paths:
+                tools.index_in_background(paths)
+            if host not in ("127.0.0.1", "localhost", "::1"):
+                print(f"cogito-mcp: warning: {host} is reachable by other machines and "
+                      "there is no authentication", file=sys.stderr)
+            print(f"cogito-mcp: http://{host}:{port}/mcp (MCP), POST /ask, POST /context",
+                  file=sys.stderr)
+            server.run("streamable-http", host=host, port=port)
+            return
         if getattr(server, "_lowlevel_server", None) is None:   # an SDK without the hook:
             tools.defer_indexing(paths)                         # index at the first call
             server.run("stdio")

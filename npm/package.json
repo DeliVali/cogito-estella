@@ -1,0 +1,11 @@
+{
+  "name": "cogito-estella",
+  "version": "0.19.0",
+  "description": "Launcher for the Cogito Estella MCP server: npx cogito-estella docs/",
+  "license": "Apache-2.0",
+  "author": "Jeffrey Romero Del Val <delvaljeffrey@gmail.com>",
+  "repository": {"type": "git", "url": "git+https://github.com/DeliVali/cogito-estella.git", "directory": "npm"},
+  "bin": {"cogito-estella": "bin/cogito-estella.js"},
+  "files": ["bin"],
+  "engines": {"node": ">=18"}
+}

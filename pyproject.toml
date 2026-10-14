@@ -1,20 +1,23 @@
 [project]
 name = "cogito-estella"
-version = "0.18.0"
+version = "0.19.0"
 description = "Cogito Estella — Latent Graph Engine: non-autoregressive decoding of sentence embeddings into knowledge graphs"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-classifiers = ["License :: OSI Approved :: Apache Software License", "Programming Language :: Python :: 3.12"]
-requires-python = ">=3.12,<3.13"
+classifiers = ["License :: OSI Approved :: Apache Software License", "Programming Language :: Python :: 3.10", "Programming Language :: Python :: 3.11", "Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13"]
+requires-python = ">=3.10,<3.14"
 authors = [{ name = "Jeffrey Romero Del Val", email = "delvaljeffrey@gmail.com" }]
 dependencies = [
-    "torch>=2.7",
     "numpy>=1.26",
     "networkx>=3.0",
+    "mcp>=2.1",
+    "spacy>=3.8",
+    "tiktoken>=0.7",
 ]
 
 [project.optional-dependencies]
 sonar = [
+    "torch>=2.7",
     "sonar-space>=0.5.0",
     "wtpsplit>=2.1",
 ]
@@ -26,14 +29,15 @@ data = [
 graph = [
     "neo4j>=5.0",
 ]
-mcp = [
-    "mcp>=2.1",
-    "spacy>=3.8",
-    "tiktoken>=0.7",
+full = [
+    "torch>=2.7",
     "huggingface-hub>=0.23",
     "sentencepiece>=0.2",
     "transformers>=4.57,<5",
     "safetensors>=0.4",
+]
+mcp = [
+    "cogito-estella[full]",
 ]
 pdf = [
     "pypdf>=4",
@@ -41,6 +45,7 @@ pdf = [
 
 [project.scripts]
 cogito-mcp = "cogito_estella.mcp.server:main"
+cogito-estella = "cogito_estella.mcp.server:main"
 
 [dependency-groups]
 dev = [

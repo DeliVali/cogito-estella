@@ -2,6 +2,16 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.19.0] - 2026-10-14
+
+### Added
+- **`--http [HOST:]PORT`**: the same server over HTTP for harnesses that cannot spawn a process, in any language: MCP (streamable HTTP) at `/mcp`, plus `POST /ask` and `POST /context` (`{"question": "..."}` in, text out) and `GET /health`. Replies are the tools' own; a test asserts they are equal. It binds to 127.0.0.1 by default and warns on any other address (no authentication).
+- **`npx -y cogito-estella docs/`**: an npm launcher (`npm/`, 20 lines, no dependencies) that runs the Python package through `uvx`, or a `cogito-estella` already on PATH, passes arguments and the exit code through, and says how to install `uv` when neither exists. For Node and TypeScript apps and for MCP configs written in `npx` form.
+- **Lite and full in one session, without a restart.** `Estella.ask(q, deep=True)` / `ask(..., deep=True)` (full profile) loads the graph model on first use, adds facts and encoder embeddings to every lite document from its stored sentences, and keeps the model resident: a project that mixes both pays one load, never an unload/reload. Without the `[full]` extra it answers with the install hint and keeps serving lite.
+- **`cogito-estella setup`**: registers the server with the agents found on this machine (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Gemini CLI, Codex, opencode; one table row per client), with absolute paths, a preview, approval before writing and a backup of every file it changes; a file that is not plain JSON is left alone. `--print` gives the entry for any other MCP client, and `cogito-estella ask|context PATH "question"` prints the reply for a harness in any language. A test launches the entry setup writes and gets an answer over MCP.
+- **One-line start.** `pip install cogito-estella` no longer pulls torch: the base install (about 300 MB) runs the lite server; the graph model moves to the `[full]` extra (`[mcp]` stays as its alias). `cogito-mcp docs/` (or `uvx cogito-estella docs/`) indexes the folder and serves the small-session setup (`--lite --profile compact`; `--full` for the graph model). `from cogito_estella import Estella; Estella("docs/").context(question)` gives any Python harness the question with its passages, no MCP needed. Python 3.10–3.13 (was 3.12 only); verified on all four in clean environments without torch. Importing the server no longer loads torch (7 s to 0.3 s), and a missing package names the exact install command.
+- **The lite index needs no spaCy model**: it splits sentences with spaCy's rule-based sentencizer. On the 1,140 SQuAD questions the same answers reach `ask` as with `en_core_web_sm` (96.2 % both, McNemar p = 1), indexing 15× faster; the model download failed in environments without pip.
+
 ## [0.18.0] - 2026-10-14
 
 ### Added

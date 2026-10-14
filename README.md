@@ -1,19 +1,53 @@
 # Cogito Estella (v0.17.0)
 
-Knowledge-graph memory for agents. A local model turns documents into `subject relation
-object` facts in one non-autoregressive pass (no LLM tokens), and the `cogito-mcp` server
-answers questions from that graph and the sentences behind it, so an agent reads a few
-hundred tokens instead of a whole document.
+Your agent reads a few hundred tokens instead of whole documents. Point Estella at your
+files; for every question it hands the model only the passages that answer it, each
+tagged with its file and section. On 8 Wikipedia articles and 48 questions per model,
+small local models answered as well as with the whole article pasted in the prompt
+while reading 3 to 5 times fewer tokens and making fewer wrong answers
+([numbers below](#small-sessions-and-small-models)). No LLM tokens are spent on indexing.
 
-![Cogito Estella demo: text to knowledge graph in one forward pass](assets/demo.gif)
-
-## Install and connect
+## Quick start
 
 ```bash
-pip install "cogito-estella[mcp]"        # add [pdf] for PDF input
+pip install cogito-estella        # Python 3.10-3.13, no GPU, no model download
 ```
 
-Client configuration (Claude Code `.mcp.json`, Cursor, any MCP client):
+**Any MCP client** (Claude Code `.mcp.json`, Cursor, Claude Desktop, ...): one line, the
+folder is indexed when the server starts.
+
+```json
+{"mcpServers": {"docs": {"command": "cogito-mcp", "args": ["docs/"]}}}
+```
+
+Or without installing: `"command": "uvx", "args": ["cogito-estella", "docs/"]`.
+
+**Any Python harness**, no MCP needed:
+
+```python
+from cogito_estella import Estella
+
+docs = Estella("docs/")                 # indexed in about a second
+prompt = docs.context("When did the embargo end?")   # the question plus its passages
+```
+
+**Which way?** If the model calls tools well, give it the MCP server: it calls `ask` when
+it needs the documents. If it does not (many small models never call a tool), send
+`docs.context(question)` as the user message, or use the server's `context` prompt: the
+answer reaches the model either way.
+
+```
+[1973_oil_crisis.txt] By the end of the embargo in March 1974, the price of oil had risen ...
+```
+
+## Long sessions: the graph model
+
+For long sessions over many documents, the full server adds a knowledge graph extracted
+by a local model, the graph tools below, and a slightly better ranking:
+
+```bash
+pip install "cogito-estella[full]"      # add [pdf] for PDF input
+```
 
 ```json
 {"mcpServers": {"cogito": {"command": "cogito-mcp", "args": ["--dir", ".cogito"]}}}
@@ -22,8 +56,8 @@ Client configuration (Claude Code `.mcp.json`, Cursor, any MCP client):
 On first run the server downloads the spaCy model and the default weights from
 [Hugging Face](https://huggingface.co/DeliVali/cogito-estella): Meta's frozen M2M-100 418M
 encoder (MIT, ~1.9 GB) under a learned pooling, and three decoder heads (Apache-2.0).
-Python 3.12; a GPU is optional (`--device cpu`). The graph lives in `.cogito/graph.json`;
-add that directory to `.gitignore`.
+A GPU is optional (`--device cpu`). The graph lives in `.cogito/graph.json`; add that
+directory to `.gitignore`.
 
 ## Tools
 
@@ -56,7 +90,9 @@ every later question is cheap. A short session over a few documents pays that st
 in full, and a small model may not use the tools at all. Three switches make a short
 session cheap:
 
-- **`--lite`** indexes sentences only. No encoder or graph head is loaded or downloaded;
+- **`--lite`** (the default when the server is given a path) indexes sentences only, split
+  by spaCy's rule-based sentencizer. No encoder, graph head or spaCy model is loaded or
+  downloaded, and torch is not needed;
   `ask` keeps its learned ranking, one of whose features is the absence of an encoder
   cosine. Graph tools have no facts for documents indexed this way, and a full server
   re-extracts them the next time it ingests them. Cold session on CPU, index plus first
@@ -245,7 +281,7 @@ uv run python -m spacy download en_core_web_sm
 uv run pytest tests/
 ```
 
-607 tests with every extra installed; modules that need the `[sonar]` extra and the tests
+614 tests with every extra installed; modules that need the `[sonar]` extra and the tests
 that load a real encoder on CUDA skip themselves without them. Package layout:
 `model/` (decoder heads), `encoders/` (encoder contract, adapters, pooling, canary),
 `mcp/` (store, readers, scorers, server), `integrations/` (the extractor). Training data,

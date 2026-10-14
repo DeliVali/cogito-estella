@@ -3,6 +3,7 @@ go deeper with query/provenance/search. Every tool reply is charged to the token
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -12,7 +13,6 @@ from collections import Counter
 from pathlib import Path
 
 from cogito_estella.encoders import ENCODERS, EncoderMismatch, encoder_revision
-from cogito_estella.encoders.pooling import PoolWeightsError
 from cogito_estella.mcp.readers import source_names
 from cogito_estella.mcp.store import ASK_SCORERS, SCORER_ALIASES, GraphStore, TextOnlyExtractor
 from cogito_estella.mcp.tokens import ntok
@@ -366,7 +366,15 @@ def _register_full(mcp, t: Tools) -> None:
 
 
 def parse_args(argv=None) -> argparse.Namespace:
-    ap = argparse.ArgumentParser(prog="cogito-mcp", description=INSTRUCTIONS)
+    ap = argparse.ArgumentParser(
+        prog="cogito-mcp", description=INSTRUCTIONS,
+        epilog="Quick start: `cogito-mcp docs/` indexes docs/ and serves the small-session "
+               "setup (--lite --profile compact). Add --full for the graph model.")
+    ap.add_argument("paths", nargs="*", type=Path, metavar="PATH",
+                    help="documents to index and serve; with any PATH the defaults become "
+                         "--lite --profile compact (use --full for the graph model)")
+    ap.add_argument("--full", action="store_true",
+                    help="with PATH: load the graph model instead of the lite index")
     ap.add_argument("--dir", type=Path, default=Path(".cogito"),
                     help="project directory holding graph.json (default: ./.cogito)")
     ap.add_argument("--checkpoint", action="append", help="decoder checkpoint (repeatable)")
@@ -378,9 +386,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="learned pooling weights for m2m100-pool (default: the published file)")
     ap.add_argument("--no-download", dest="download", action="store_false",
                     help="never download weights or the spaCy model")
-    ap.add_argument("--profile", choices=PROFILES, default="full",
+    ap.add_argument("--profile", choices=PROFILES, default=None,
                     help="tool surface: full (seven tools) or compact (`ask` alone, one "
-                         "argument, plain replies; for models with little context)")
+                         "argument, plain replies; for models with little context); default "
+                         "compact with PATH, full without")
     ap.add_argument("--ingest", action="append", type=Path, default=None, metavar="PATH",
                     help="file or directory indexed at startup, in the background "
                          "(repeatable); the model then never has to call `ingest`")
@@ -391,7 +400,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--budget", type=int, default=600,
                     help=f"token budget of one `ask` reply ({ASK_BUDGET_MIN}-{ASK_BUDGET_MAX}; "
                          "default 600)")
-    return ap.parse_args(argv)
+    ns = ap.parse_args(argv)
+    if ns.paths:                     # one positional path is the whole setup
+        ns.ingest = [*(ns.ingest or []), *ns.paths]
+        ns.lite = ns.lite or not ns.full
+        ns.profile = ns.profile or "compact"
+    ns.profile = ns.profile or "full"
+    return ns
 
 
 def build_extractor(weights, ns: argparse.Namespace):
@@ -400,6 +415,7 @@ def build_extractor(weights, ns: argparse.Namespace):
     `ns.encoder` (not the resolved name) is forwarded: an unset flag lets legacy
     checkpoints keep their own encoder, and their space is announced here, once the
     checkpoints have decided it."""
+    from cogito_estella.encoders.pooling import PoolWeightsError  # torch: full mode only
     from cogito_estella.integrations import llamaindex_connector as connector
     point = weights.operating_point or (None, None)
     try:
@@ -419,9 +435,14 @@ def _encoder_line(encoder: str) -> str:
     return f"encoder={encoder} revision={encoder_revision(encoder)}"
 
 
+_FULL_ONLY = ("torch", "transformers", "huggingface_hub", "sentencepiece", "safetensors")
+
+
 def _exit_missing_dependency(exc: ImportError) -> None:
-    sys.exit(f"cogito-mcp: missing optional dependency {exc.name}; "
-             "install with: pip install 'cogito-estella[mcp]'")
+    name = (exc.name or "").split(".")[0]
+    fix = ("pip install 'cogito-estella[full]' (the graph model; or run with --lite)"
+           if name in _FULL_ONLY else "pip install -U cogito-estella")
+    sys.exit(f"cogito-mcp: missing dependency {exc.name}; install with: {fix}")
 
 
 def main(argv=None) -> None:
@@ -430,10 +451,14 @@ def main(argv=None) -> None:
         resolve_scorer()                       # before a model load makes the failure expensive
     except ValueError as exc:
         sys.exit(f"cogito-mcp: {exc}")
+    if not ns.lite and importlib.util.find_spec("torch") is None:
+        sys.exit("cogito-mcp: the graph model needs: pip install 'cogito-estella[full]'; "
+                 "or run with --lite (or give a PATH) to serve without it")
     try:
         weights = None if ns.lite else resolve(ns.checkpoint, ns.vocab, download=ns.download,
                                                encoder=ns.encoder, pool=ns.pool)
-        ensure_spacy_model(download=ns.download)
+        if not ns.lite:                        # the lite index needs no spaCy model
+            ensure_spacy_model(download=ns.download)
     except WeightsError as exc:
         sys.exit(f"cogito-mcp: {exc}")
     except ImportError as exc:

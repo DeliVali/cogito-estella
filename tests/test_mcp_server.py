@@ -219,7 +219,7 @@ def test_main_missing_dependency_at_weight_resolution_exits_with_install_hint(mo
     monkeypatch.setattr(srv, "ensure_spacy_model", boom)
     with pytest.raises(SystemExit) as exc:
         srv.main(["--dir", str(tmp_path)])
-    assert "spacy" in str(exc.value) and "cogito-estella[mcp]" in str(exc.value)
+    assert "spacy" in str(exc.value) and "pip install -U cogito-estella" in str(exc.value)
 
 
 def test_main_missing_mcp_sdk_exits_with_install_hint(monkeypatch, tmp_path):
@@ -232,7 +232,7 @@ def test_main_missing_mcp_sdk_exits_with_install_hint(monkeypatch, tmp_path):
     monkeypatch.setattr(srv, "build_server", boom)
     with pytest.raises(SystemExit) as exc:
         srv.main(["--dir", str(tmp_path)])
-    assert "mcp" in str(exc.value) and "cogito-estella[mcp]" in str(exc.value)
+    assert "mcp" in str(exc.value) and "pip install -U cogito-estella" in str(exc.value)
 
 
 def test_the_startup_line_names_the_encoder_and_its_revision(monkeypatch, tmp_path, capsys):
@@ -759,3 +759,57 @@ def test_a_cold_lite_server_indexes_at_startup_and_answers_over_stdio(tmp_path, 
     names, out = asyncio.run(asyncio.wait_for(run(), 180))
     assert names == ["ask"]
     assert "[notes.md § Setup] The generated concepts are decoded by SONAR." in out
+
+
+# -- quick start: one path is the whole setup ----------------------------------------------
+
+def test_a_path_alone_selects_the_small_session_setup():
+    ns = parse_args(["docs"])
+    assert ns.ingest == [Path("docs")] and ns.lite and ns.profile == "compact"
+    ns = parse_args(["docs", "--full"])
+    assert not ns.lite and ns.profile == "compact"
+    ns = parse_args(["docs", "--profile", "full"])
+    assert ns.lite and ns.profile == "full"
+    ns = parse_args([])
+    assert not ns.lite and ns.profile == "full" and ns.ingest is None
+
+
+def test_a_missing_model_package_names_the_full_extra(monkeypatch, tmp_path):
+    import importlib.util
+
+    import cogito_estella.mcp.server as srv
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    with pytest.raises(SystemExit) as exc:
+        srv.main(["--dir", str(tmp_path)])
+    assert "cogito-estella[full]" in str(exc.value) and "--lite" in str(exc.value)
+
+
+def test_the_server_module_does_not_import_torch():
+    import subprocess
+    code = ("import sys, cogito_estella.mcp.server, cogito_estella.mcp.store; "
+            "print('torch' in sys.modules)")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         check=False)
+    assert out.stdout.strip() == "False"
+
+
+def test_estella_answers_in_three_lines(tmp_path, nlp):
+    from cogito_estella import Estella
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "notes.md").write_text("## Setup\n" + DOC + "\n")
+    docs = Estella(tmp_path / "docs")
+    assert "[notes.md § Setup] The generated concepts are decoded by SONAR." in \
+        docs.ask("What is decoded by SONAR?")
+    msg = docs.context("What is decoded by SONAR?")
+    assert msg.startswith("Context from the indexed documents") and \
+        msg.endswith("Question: What is decoded by SONAR?")
+    docs.add("The decoder maps a vector to text.", name="extra")
+    assert "extra" in docs.store.docs
+
+
+def test_estella_keeps_its_index_when_asked(tmp_path, nlp):
+    from cogito_estella import Estella
+    (tmp_path / "a.txt").write_text(DOC)
+    Estella(tmp_path / "a.txt", save_to=tmp_path / "idx")
+    again = Estella(save_to=tmp_path / "idx")
+    assert str(tmp_path / "a.txt") in again.store.docs

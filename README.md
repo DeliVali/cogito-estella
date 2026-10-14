@@ -21,6 +21,10 @@ change, asks before writing and backs up every file it touches.
 cogito-estella setup docs/          # or, without installing: uvx cogito-estella setup docs/
 ```
 
+**From Node or TypeScript**: `npx -y cogito-estella setup docs/`, or in an MCP config
+`{"command": "npx", "args": ["-y", "cogito-estella", "docs/"]}`. The npm package is a
+launcher for the Python one: it needs `uv` (or `pip install cogito-estella`) on the machine.
+
 **Any other MCP client**: `cogito-estella setup --print` prints the entry, or add it by
 hand; the folder is indexed when the server starts.
 

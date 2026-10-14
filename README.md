@@ -81,6 +81,24 @@ session cheap:
   McNemar p = 0.016), at 533 and 561 tokens per reply, against 4.4k for the article.
   Indexing all eight took 31 s and 715 MB with `--lite`, 479 s and 2.9 GB in full. Use
   `--lite` for short sessions and keep the full server for long ones.
+
+  End to end on the same articles (48 sampled questions per branch, a fresh `--lite`
+  index per article, Qwen2.5-Instruct Q4_K_M on CPU), against pasting the whole article:
+
+  | model | branch | right | wrong | prompt tokens / question |
+  | :--- | :--- | :--- | :--- | :--- |
+  | 1.5B | whole article in the prompt | 39 | 9 | 4,646 |
+  | 1.5B | `context` push | 35 | 8 | 894 |
+  | 1.5B | `ask` tool (never called) | 4 | 12 | 506 |
+  | 3B | whole article in the prompt | 35 | 11 | 4,646 |
+  | 3B | `context` push | 32 | 5 | 1,004 |
+  | 3B | `ask` tool (called in 41 of 48) | 34 | 5 | 1,494 |
+
+  Paired against the whole article (McNemar), push is not significantly different for
+  either model (p = 0.39 and 0.65) nor is the `ask` tool for the 3B (p = 1), at 3 to 5×
+  fewer tokens; the tool is significantly worse for the 1.5B, which never calls it. The
+  integrator picks the route: `ask` for a model that calls tools, `context` for one that
+  does not.
 - **`--profile compact`** and the **`context` prompt**, below, cut the per-turn cost and
   reach models that do not call tools.
 - **Sections.** Markdown documents keep the heading path of every sentence, and compact

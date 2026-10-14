@@ -31,9 +31,8 @@ class Client:
 def _desktop_config(home: Path) -> Path:
     if sys.platform == "darwin":
         return home / "Library/Application Support/Claude/claude_desktop_config.json"
-    if sys.platform.startswith("win"):
-        return Path(os.environ.get("APPDATA", home / "AppData/Roaming")) / \
-            "Claude/claude_desktop_config.json"
+    if sys.platform.startswith("win"):            # %APPDATA%, derived from `home` so a
+        return home / "AppData/Roaming/Claude/claude_desktop_config.json"   # test stays in it
     return home / ".config/Claude/claude_desktop_config.json"
 
 

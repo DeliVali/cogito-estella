@@ -298,7 +298,11 @@ class GraphStore:
         with self._lock:
             lite_docs = [s for s, d in self.docs.items() if d.get("lite")]
             for s in lite_docs:
-                self._reextract(s)
+                # a file is read again so the full model splits it with its own scanner,
+                # exactly as a full index would; raw text keeps its stored sentences
+                if not (Path(s).is_file() and self.ingest_path(Path(s), save=False)
+                        and not self.docs[s].get("lite")):
+                    self._reextract(s)
             if lite_docs:
                 self.save()
         return None
@@ -390,7 +394,7 @@ class GraphStore:
             return IngestResult(source, status, len(sents), n_new, raw, graph_tok,
                                 round(raw / max(graph_tok, 1), 1), round(time.time() - t0, 2))
 
-    def ingest_path(self, path: str | Path) -> list[IngestResult | str]:
+    def ingest_path(self, path: str | Path, save: bool = True) -> list[IngestResult | str]:
         """Ingest a file or directory; one IngestResult per document, or an
         error line `source=<name> error=<message>` (unreadable or empty).
         Saves once at the end, not once per document."""
@@ -407,7 +411,8 @@ class GraphStore:
             if not out:
                 out.append(f"source={path} error=no supported documents "
                            "(txt, md, html, htm, pdf)")
-            self.save()
+            if save:
+                self.save()
         return out
 
     def _add_edge(self, rec: dict) -> None:

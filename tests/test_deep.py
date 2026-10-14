@@ -82,3 +82,50 @@ def test_ask_deep_answers_and_switches_the_store(tmp_path, nlp):
     assert loads == [1] and not store.is_lite
     t.ask("What maps text?", deep=True)
     assert loads == [1]
+
+
+def test_deep_reads_files_again_so_the_full_scanner_splits_them(tmp_path, nlp):
+    class Scanner(_Full):
+        def _scanner(self):                       # a splitter that differs from the lite one
+            class Doc:
+                def __init__(self, text):
+                    self.sents = [type("S", (), {"text": t})() for t in text.split(" | ")]
+            return Doc
+    path = tmp_path / "a.txt"
+    path.write_text("one thing | two things | three things")
+    loads = []
+    store = GraphStore(extractor_factory=TextOnlyExtractor,
+                       full_factory=lambda: (loads.append(1), Scanner())[1],
+                       path=tmp_path / "g.json")
+    store.ingest_path(path)
+    assert store.docs[str(path)]["sentences"] == 1        # lite sentencizer: no full stop
+    store.use_full()
+    assert store.docs[str(path)]["sentences"] == 3        # the full scanner's split
+    assert "lite" not in store.docs[str(path)]
+
+
+def test_rest_routes_answer_like_the_tools(tmp_path, nlp):
+    from starlette.testclient import TestClient
+
+    from cogito_estella.mcp.server import build_server, register_rest
+    store = GraphStore(extractor_factory=TextOnlyExtractor)
+    store.ingest_text(DOC, "a.md")
+    t = Tools(store, "compact")
+    server = build_server(store, t)
+    register_rest(server, t)
+    client = TestClient(server.streamable_http_app())
+    q = "What decodes the concepts?"
+    assert client.post("/ask", json={"question": q}).text == t.ask(q)
+    assert client.post("/context", json={"question": q}).text == t.context(q)
+    assert client.post("/ask", json={}).status_code == 400
+    assert client.get("/health").text == "ok"
+
+
+def test_http_bind_spec():
+    import pytest
+
+    from cogito_estella.mcp.server import parse_bind
+    assert parse_bind("8765") == ("127.0.0.1", 8765)
+    assert parse_bind("0.0.0.0:80") == ("0.0.0.0", 80)
+    with pytest.raises(ValueError):
+        parse_bind("host:notaport")

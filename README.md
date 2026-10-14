@@ -25,6 +25,10 @@ cogito-estella setup docs/          # or, without installing: uvx cogito-estella
 `{"command": "npx", "args": ["-y", "cogito-estella", "docs/"]}`. The npm package is a
 launcher for the Python one: it needs `uv` (or `pip install cogito-estella`) on the machine.
 
+**Over HTTP** (a harness that cannot spawn a process, any language): `cogito-mcp docs/ --http 8765`
+serves MCP at `http://127.0.0.1:8765/mcp` and plain `POST /ask` / `POST /context` with
+`{"question": "..."}` returning text. No authentication: keep it on localhost or behind your proxy.
+
 **Any other MCP client**: `cogito-estella setup --print` prints the entry, or add it by
 hand; the folder is indexed when the server starts.
 

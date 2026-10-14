@@ -51,6 +51,9 @@ COMPACT_LOW = ("Low confidence: these lines may not answer the question. If none
                "states the answer, reply that the documents do not say.")
 COMPACT_WHOLE = "All of the indexed text fits here ({docs} document{s}):"
 COMPACT_NONE = "Nothing in the indexed documents matches this question."
+SECTION_DEPTH = 2               # heading levels a compact line names; 0 names none
+SECTION_WIDTH = 40              # characters kept of one heading
+SECTION_SEP = " › "
 SONAR_COS_FLOOR, SONAR_FLOOR, SONAR_OFFSET = DENSE_COS_FLOOR, DENSE_FLOOR, DENSE_OFFSET   # older names
 # question words too generic to be worth a graph hop
 _GENERIC = ("model models paper use uses used result results work approach method "
@@ -89,14 +92,94 @@ class _StdoutWire:
 _quiet = _StdoutWire().quiet               # every stdout redirect in this process goes here
 
 
+class TextOnlyExtractor:
+    """`--lite`: the sentence index without the graph model. Sentences are split with
+    spaCy and no encoder or decoder head is loaded, so a small session starts at once and
+    downloads nothing; `ask` still ranks with the learned scorer, whose features include
+    the absence of an encoder cosine. Documents indexed this way carry no facts, and are
+    extracted again the next time a full server ingests them."""
+
+    lite = True
+    encoder_name = None
+
+    def _scanner(self):
+        if not hasattr(self, "_nlp"):
+            try:
+                import spacy
+                self._nlp = spacy.load("en_core_web_sm", disable=["ner"])
+            except (ImportError, OSError):
+                self._nlp = False
+        return self._nlp
+
+    def extract_batch_with_provenance(self, texts, doc_offsets=None):
+        return [[] for _ in texts]
+
+
 def _full_line(src: str, si: int, text: str) -> str:
     return f'{src} s{si}: "{text}"'
 
 
-def _compact_line(src: str, _si: int, text: str) -> str:
+def _compact_line(src: str, text: str, section: str = "") -> str:
     # one passage per line, every line tagged: a sentence spanning a markdown table or a
     # bullet list would otherwise continue on untagged lines
-    return f"[{src}] {' '.join(text.split())}"
+    where = f"{src} § {section}" if section else src
+    return f"[{where}] {' '.join(_drop_shown_headings(text, section).split())}"
+
+
+def _drop_shown_headings(text: str, section: str) -> str:
+    """A sentence that opens with the heading its tag already names says it twice: spaCy
+    keeps `## Setup` inside the first sentence under it."""
+    shown = set(section.split(SECTION_SEP)) if section else set()
+    while shown:
+        first, _, rest = text.lstrip().partition("\n")
+        if " ".join(first.lstrip("#").translate(_MARKUP).split()) not in shown or not rest:
+            break
+        text = rest
+    return text
+
+
+_HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
+_FENCE = re.compile(r"^[ \t]*(```|~~~)")
+_MARKUP = str.maketrans("", "", "[]*`_")
+
+
+def section_paths(text: str, offsets: list[int]) -> list[str]:
+    """The markdown heading path each sentence sits under, "" outside any heading; the
+    offsets are the sentences' starts, in document order.
+
+    A sentence ranked on its own loses the section that gives it meaning: "networkx added
+    to the core dependencies" says nothing about the version unless the reader sees it sits
+    under `## [0.9.0]`. A lone level-1 heading is the document's title, not a section, and is
+    left out and fenced code is skipped. The whole path is stored; `shown_section` trims it."""
+    heads: list[tuple[int, int, str]] = []
+    pos, fenced = 0, False
+    for line in text.splitlines(keepends=True):
+        bare = line.rstrip("\r\n")
+        if _FENCE.match(bare):
+            fenced = not fenced
+        elif not fenced and (m := _HEADING.match(bare)):
+            title = " ".join(m.group(2).translate(_MARKUP).split())
+            if title:
+                heads.append((pos, len(m.group(1)), title[:SECTION_WIDTH]))
+        pos += len(line)
+    if sum(1 for _, level, _ in heads if level == 1) == 1:
+        heads = [h for h in heads if h[1] != 1]
+    out, stack, k = [], [], 0
+    for off in offsets:
+        while k < len(heads) and heads[k][0] <= off:
+            _, level, title = heads[k]
+            stack = [h for h in stack if h[0] < level] + [(level, title)]
+            k += 1
+        out.append(SECTION_SEP.join(t for _, t in stack))
+    return out
+
+
+def shown_section(path: str) -> str:
+    """The deepest SECTION_DEPTH headings of a stored path: the depth is a rendering choice,
+    so it changes without re-indexing."""
+    if not path or SECTION_DEPTH <= 0:
+        return ""
+    return SECTION_SEP.join(path.split(SECTION_SEP)[-SECTION_DEPTH:])
 
 
 @dataclass
@@ -129,6 +212,15 @@ class _AskSnapshot:
     mask: object
     cover: str
     doc_sents: dict
+    sections: dict = None       # source -> heading path per sentence (absent on old graphs)
+
+    def section(self, key) -> str:
+        src, si = key
+        paths = (self.sections or {}).get(src) or ()
+        return shown_section(paths[si]) if si < len(paths) else ""
+
+    def compact(self, i: int) -> str:
+        return _compact_line(self.keys[i][0], self.texts[i], self.section(self.keys[i]))
 
     def rel_pos(self, key) -> float:
         """Where a sentence sits in its own document, 0 at the head and 1 at the tail."""
@@ -196,7 +288,14 @@ class GraphStore:
             t0 = time.time()
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
             prev = self.docs.get(source)
-            if prev and prev["sha256"] == digest:
+            upgrade = bool(prev and prev.get("lite")) and not getattr(self.extractor, "lite",
+                                                                       False)
+            if prev and prev["sha256"] == digest and not upgrade:
+                if "sections" not in prev:         # indexed before sections existed: the
+                    prev["sections"] = section_paths(  # text and offsets are enough, no
+                        text, [o for _, o in prev["sents"]])   # extraction runs again
+                    if save:
+                        self.save()
                 return IngestResult(source, "unchanged", prev["sentences"], 0, prev["tokens"],
                                     0, 0.0, round(time.time() - t0, 2))
             status = "replaced" if prev else "ingested"
@@ -220,7 +319,9 @@ class GraphStore:
                     n_new += 1
             raw = ntok(text)
             self.docs[source] = {"sha256": digest, "tokens": raw, "sentences": len(sents),
-                                 "sents": sents}
+                                 "sents": sents, "sections": section_paths(text, offsets)}
+            if getattr(ex, "lite", False):
+                self.docs[source]["lite"] = True
             self._embed_source(ex, source, texts)
             self._invalidate_index()
             self._sync_raw_tokens()
@@ -522,8 +623,9 @@ class GraphStore:
                 return whole, None
             low = conf is not None and conf < LOW_CONFIDENCE
             body = [COMPACT_LOW if low else COMPACT_HEAD]
-            sents = self._sentence_lines(snap.texts, snap.keys, scores, body, budget, sep=[],
-                                         fmt=_compact_line)
+            sents = self._sentence_lines(
+                snap.texts, snap.keys, scores, body, budget, sep=[],
+                fmt=lambda src, si, text: _compact_line(src, text, snap.section((src, si))))
             return ("\n".join(body + sents) if sents else COMPACT_NONE), conf
         mark = f" · p={conf:.2f}" if conf is not None else ""
         head = (f"entities: {', '.join(snap.ents) or '(none)'}{mark} · scorer={name}")
@@ -538,9 +640,13 @@ class GraphStore:
         if not snap.texts or self.ledger.raw_tokens > budget:
             return None
         docs = len(snap.doc_sents)
-        text = "\n".join([COMPACT_WHOLE.format(docs=docs, s="" if docs == 1 else "s"),
-                          *(_compact_line(src, si, t)
-                            for (src, si), t in zip(snap.keys, snap.texts))])
+        lines, prev = [COMPACT_WHOLE.format(docs=docs, s="" if docs == 1 else "s")], None
+        for (src, si), t in zip(snap.keys, snap.texts):
+            where = (src, snap.section((src, si)))   # in document order a tag that repeats
+            lines.append(_compact_line(where[0], t, where[1]) if where != prev    # says nothing
+                         else f"[{src}] {' '.join(t.split())}")
+            prev = where
+        text = "\n".join(lines)
         return text if ntok(text) <= budget else None
 
     def _ask_snapshot(self, question, dense: bool):
@@ -562,7 +668,8 @@ class GraphStore:
             mat, mask = self._embedding_matrix(keys) if dense else (None, None)
             snap = _AskSnapshot(texts=texts, keys=keys, ents=ents, boost=boost, mat=mat,
                                 mask=mask, cover=self._embedded_note(),
-                                doc_sents={src: d["sentences"] for src, d in self.docs.items()})
+                                doc_sents={src: d["sentences"] for src, d in self.docs.items()},
+                                sections={src: d.get("sections") for src, d in self.docs.items()})
         return lex, snap, edges
 
     def _embedded_note(self) -> str:
@@ -601,6 +708,8 @@ class GraphStore:
     def _encode_question(self, question, width=None):
         """The question as a flat row, or None when no encoder answers for it or its width
         does not match the stored rows: a mismatched product is a crash, not a ranking."""
+        if not hasattr(self.extractor, "encode_batch"):    # --lite: nothing to encode with
+            return None
         try:
             with _quiet():                         # stdout is the MCP wire
                 q = np.asarray(self.extractor.encode_batch([question]), dtype=np.float32)

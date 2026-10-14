@@ -624,3 +624,138 @@ def test_a_compact_line_is_one_tagged_passage_even_for_a_multiline_sentence(comp
     compact.ingest("| table | row |\n| spans | lines |\n\nThe encoder maps text to a vector.")
     out = compact.ask("What does the encoder map text to?")
     assert all(line.startswith("[text1] ") for line in out.splitlines()[1:])
+
+
+# -- small sessions: section paths and the lite index ---------------------------------------
+
+MD = """# Project
+
+## [0.9.0] - 2026-09-01
+
+### Added
+- networkx added to the core dependencies.
+
+```
+# not a heading
+```
+
+## [0.8.0]
+The encoder maps text to a vector.
+"""
+
+
+def test_section_paths_follow_the_markdown_headings():
+    from cogito_estella.mcp.store import section_paths, shown_section
+    offs = [0, MD.index("networkx"), MD.index("# not"), MD.index("The encoder")]
+    paths = section_paths(MD, offs)
+    assert paths == ["", "0.9.0 - 2026-09-01 › Added", "0.9.0 - 2026-09-01 › Added", "0.8.0"]
+    assert shown_section(paths[1]) == "0.9.0 - 2026-09-01 › Added"
+
+
+def test_several_level_one_headings_are_sections_not_a_title():
+    from cogito_estella.mcp.store import section_paths
+    text = "# A\nfirst.\n# B\nsecond.\n"
+    assert section_paths(text, [text.index("first"), text.index("second")]) == ["A", "B"]
+
+
+def test_the_shown_depth_is_a_rendering_choice(monkeypatch):
+    import cogito_estella.mcp.store as st
+    monkeypatch.setattr(st, "SECTION_DEPTH", 1)
+    assert st.shown_section("0.9.0 › Added") == "Added"
+    monkeypatch.setattr(st, "SECTION_DEPTH", 0)
+    assert st.shown_section("0.9.0 › Added") == ""
+
+
+def test_compact_lines_name_the_section_a_passage_sits_under(compact):
+    compact.ingest(MD + FILLER)
+    out = compact.ask("Which version added networkx to the core dependencies?")
+    # spaCy keeps the heading lines and the bullet in one sentence that starts inside
+    # `## [0.9.0]`: the path is that heading, and the version reaches the reader either way
+    line = next(x for x in out.splitlines() if "networkx" in x)
+    assert line.startswith("[text1 § 0.9.0 - 2026-09-01] ")
+
+
+def test_the_whole_corpus_names_a_section_once_per_run_of_lines(compact):
+    compact.ingest("## Setup\nInstall the encoder first. Then run the encoder.\n")
+    lines = compact.ask("How do I run the encoder?").splitlines()
+    assert lines[1].startswith("[text1 § Setup] ") and lines[2].startswith("[text1] Then")
+
+
+def test_a_document_indexed_before_sections_gets_them_without_extraction(compact):
+    compact.ingest(MD)
+    doc = compact.store.docs["text1"]
+    del doc["sections"]
+    compact.store._ex = None                      # any extraction would now fail
+    compact.store._factory = None
+    assert compact.store.ingest_text(MD, "text1").status == "unchanged"
+    assert "0.8.0" in compact.store.docs["text1"]["sections"]
+
+
+def test_the_lite_index_ranks_without_any_model(nlp, capsys):
+    from cogito_estella.mcp.store import TextOnlyExtractor
+    t = Tools(GraphStore(extractor_factory=TextOnlyExtractor), profile="compact")
+    res = t.store.ingest_text(BIG, "doc")
+    assert res.triples == 0 and t.store.docs["doc"]["lite"] is True and not t.store.emb
+    out = t.ask("What does the encoder map text to?")
+    assert "[doc] The encoder maps text to a vector." in out.splitlines()[1]
+    assert "encoding failed" not in capsys.readouterr().err
+
+
+def test_a_full_server_extracts_again_what_the_lite_index_left_without_facts(fake_extractor, nlp):
+    from cogito_estella.mcp.store import TextOnlyExtractor
+    store = GraphStore(extractor_factory=TextOnlyExtractor)
+    store.ingest_text(DOC, "doc")
+    store._ex = fake_extractor(TRIPLES)
+    res = store.ingest_text(DOC, "doc")
+    assert res.status == "replaced" and res.triples == 2 and "lite" not in store.docs["doc"]
+    assert store.ingest_text(DOC, "doc").status == "unchanged"
+
+
+def test_lite_mode_never_resolves_or_downloads_weights(monkeypatch, tmp_path, capsys):
+    import cogito_estella.mcp.server as srv
+
+    def no_weights(*_a, **_k):
+        raise AssertionError("--lite must not resolve weights")
+
+    def boom(store, *_a, **_k):
+        raise ImportError("No module named 'mcp'", name="mcp")
+    monkeypatch.setattr(srv, "resolve", no_weights)
+    monkeypatch.setattr(srv, "ensure_spacy_model", lambda **k: None)
+    monkeypatch.setattr(srv, "build_server", boom)
+    with pytest.raises(SystemExit):
+        srv.main(["--dir", str(tmp_path), "--lite"])
+    assert "encoder=none (lite)" in capsys.readouterr().err
+    assert parse_args(["--lite"]).lite and not parse_args([]).lite
+
+
+def test_deferred_indexing_starts_at_the_first_tool_call(compact, tmp_path):
+    (tmp_path / "a.txt").write_text(DOC)
+    compact.defer_indexing([tmp_path / "a.txt"])
+    assert compact.store.docs == {}
+    assert "decoded by SONAR" in compact.ask("What is decoded by SONAR?")
+
+
+def test_a_cold_lite_server_indexes_at_startup_and_answers_over_stdio(tmp_path, nlp):
+    """The handshake must reach stdout while the startup indexing loads spaCy: indexing
+    that began before the transport claimed stdout sent every reply to stderr."""
+    import asyncio
+
+    from mcp.client.session import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "notes.md").write_text("## Setup\n" + DOC + "\n")
+    args = ["-m", "cogito_estella.mcp.server", "--dir", str(tmp_path / "g"), "--lite",
+            "--profile", "compact", "--ingest", str(tmp_path / "docs"), "--no-download"]
+
+    async def run():
+        params = StdioServerParameters(command=sys.executable, args=args)
+        async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
+            await asyncio.wait_for(s.initialize(), 60)
+            names = [t.name for t in (await s.list_tools()).tools]
+            res = await s.call_tool("ask", {"question": "What is decoded by SONAR?"},
+                                    read_timeout_seconds=120)
+            return names, "\n".join(c.text for c in res.content if hasattr(c, "text"))
+    names, out = asyncio.run(asyncio.wait_for(run(), 180))
+    assert names == ["ask"]
+    assert "[notes.md § Setup] The generated concepts are decoded by SONAR." in out

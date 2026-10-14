@@ -49,7 +49,46 @@ Flags: `--encoder sonar` for the SONAR-space heads (research only: `pip install
 for local weights; `--device`; `--no-download`. `COGITO_ASK_SCORER=lexical` keeps the
 plain IDF order.
 
-## Small models and short context
+## Small sessions and small models
+
+The full server pays off over long sessions: the encoder and the graph load once and
+every later question is cheap. A short session over a few documents pays that start-up
+in full, and a small model may not use the tools at all. Three switches make a short
+session cheap:
+
+- **`--lite`** indexes sentences only. No encoder or graph head is loaded or downloaded;
+  `ask` keeps its learned ranking, one of whose features is the absence of an encoder
+  cosine. Graph tools have no facts for documents indexed this way, and a full server
+  re-extracts them the next time it ingests them. Cold session on CPU, index plus first
+  answer, answer present in the compact reply:
+
+  | corpus | full | `--lite` |
+  | :--- | :--- | :--- |
+  | README (2.1k tokens), 10 questions | 29.3 s · 2.6 GB · 8/10 | 3.8 s · 0.6 GB · 9/10 |
+  | README + CHANGELOG (9.4k), 22 questions | 67.6 s · 2.8 GB · 20/22 | 4.3 s · 0.7 GB · 21/22 |
+
+  End to end over the README alone (8 questions with an answer, 2 without, a cold
+  `--lite` server, native list/read/grep in every branch): neither Qwen2.5 1.5B nor 3B
+  read the short file by itself (0 of 8 with native tools only); the 1.5B answered 7 of
+  8 with no wrong answer when the client pushed the `context` prompt (946 prompt tokens
+  per question), the 3B 2 of 8 calling `ask` under `--profile compact` and 3 of 8 under
+  push.
+
+  One corpus: on it the encoder cosine and the graph's provenance bonus add nothing to
+  `ask`. Whether they do on longer technical papers, where the learned scorer was fitted,
+  is not measured here; keep the full server for long sessions.
+- **`--profile compact`** and the **`context` prompt**, below, cut the per-turn cost and
+  reach models that do not call tools.
+- **Sections.** Markdown documents keep the heading path of every sentence, and compact
+  lines name it (`[CHANGELOG.md § 0.9.0 - 2026-09-01] …`): a sentence ranked on its own
+  no longer loses the version or section that gives it meaning (one more answer of 22
+  reaches the reply above, at the same token cost). Documents indexed before this keep
+  working and get their paths when re-ingested, without a new extraction.
+
+```json
+{"mcpServers": {"cogito": {"command": "cogito-mcp",
+  "args": ["--dir", ".cogito", "--lite", "--profile", "compact", "--ingest", "docs"]}}}
+```
 
 A model can only use `ask` if it decides to call it, and small models often do not: in
 the bench below a 1.5B model called no tool at all, under any prompt, and a 3B model
@@ -70,11 +109,6 @@ Two ways to get the documents to such a model:
 `--ingest PATH` (repeatable) indexes documents at startup, in the background, so the
 model never has to call `ingest`; reading tools wait for it rather than answer from a
 half-built index. `--budget` sets the token budget of one reply.
-
-```json
-{"mcpServers": {"cogito": {"command": "cogito-mcp",
-  "args": ["--dir", ".cogito", "--profile", "compact", "--ingest", "docs"]}}}
-```
 
 Measured on CPU with Qwen2.5-Instruct (Q4_K_M, temperature 0): 22 questions whose exact
 answer is in this repository's README and CHANGELOG (9.4k tokens, the cost of reading
@@ -189,7 +223,7 @@ uv run python -m spacy download en_core_web_sm
 uv run pytest tests/
 ```
 
-596 tests with every extra installed; modules that need the `[sonar]` extra and the tests
+607 tests with every extra installed; modules that need the `[sonar]` extra and the tests
 that load a real encoder on CUDA skip themselves without them. Package layout:
 `model/` (decoder heads), `encoders/` (encoder contract, adapters, pooling, canary),
 `mcp/` (store, readers, scorers, server), `integrations/` (the extractor). Training data,

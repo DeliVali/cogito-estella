@@ -14,7 +14,7 @@ from pathlib import Path
 from cogito_estella.encoders import ENCODERS, EncoderMismatch, encoder_revision
 from cogito_estella.encoders.pooling import PoolWeightsError
 from cogito_estella.mcp.readers import source_names
-from cogito_estella.mcp.store import ASK_SCORERS, SCORER_ALIASES, GraphStore
+from cogito_estella.mcp.store import ASK_SCORERS, SCORER_ALIASES, GraphStore, TextOnlyExtractor
 from cogito_estella.mcp.tokens import ntok
 from cogito_estella.mcp.weights import WeightsError, ensure_spacy_model, resolve
 
@@ -112,6 +112,7 @@ class Tools:
         self._ready = threading.Event()
         self._ready.set()
         self._index_error: str | None = None
+        self._deferred: list[Path] = []
 
     def _charge(self, tool: str, out: str) -> str:
         self.store.ledger.charge(tool, out)
@@ -139,8 +140,18 @@ class Tools:
         finally:
             self._ready.set()
 
+    def defer_indexing(self, paths) -> None:
+        """Index `paths` when the first tool call arrives: by then the handshake is done and
+        the transport owns stdout. Reading tools wait for it from the start."""
+        self._deferred = [Path(p) for p in paths]
+        if self._deferred:
+            self._ready.clear()
+
     def _not_ready(self) -> str | None:
         """Why a reading tool cannot answer yet, or None once the index is complete."""
+        if self._deferred:
+            paths, self._deferred = self._deferred, []
+            self.index_in_background(paths)
         if not self._ready.wait(INDEX_WAIT):
             return "still indexing the documents; call again in a minute"
         if self._index_error:
@@ -230,6 +241,27 @@ def build_server(store: GraphStore, tools: Tools | None = None, corpus=None,
     _register_context(mcp, t)
     store.ledger.schema_tokens = schema_tokens(mcp)
     return mcp
+
+
+def serve_stdio(server, on_claimed=None) -> None:
+    """Serve over stdio and call `on_claimed` once the transport owns stdout.
+
+    The SDK picks the descriptor it answers on from `sys.stdout` when it claims it, and the
+    store silences stdout around model loads by pointing `sys.stdout` at stderr. Indexing
+    started before the claim could land in that window: every reply then went to stderr and
+    the client never saw the handshake. Started after it, the SDK has already diverted fd 1
+    to stderr, so nothing printed by a load can reach the wire."""
+    import anyio
+    from mcp.server.stdio import stdio_server
+    lowlevel = getattr(server, "_lowlevel_server", None)
+
+    async def run() -> None:
+        async with stdio_server() as (read, write):
+            if on_claimed is not None:
+                on_claimed()
+            await lowlevel.run(read, write, lowlevel.create_initialization_options())
+
+    anyio.run(run)
 
 
 def _register_context(mcp, t: Tools) -> None:
@@ -352,6 +384,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--ingest", action="append", type=Path, default=None, metavar="PATH",
                     help="file or directory indexed at startup, in the background "
                          "(repeatable); the model then never has to call `ingest`")
+    ap.add_argument("--lite", action="store_true",
+                    help="index sentences only: no graph model is loaded or downloaded, so "
+                         "the server starts at once; `ask` keeps its learned ranking, the "
+                         "graph tools have no facts for documents indexed this way")
     ap.add_argument("--budget", type=int, default=600,
                     help=f"token budget of one `ask` reply ({ASK_BUDGET_MIN}-{ASK_BUDGET_MAX}; "
                          "default 600)")
@@ -395,30 +431,35 @@ def main(argv=None) -> None:
     except ValueError as exc:
         sys.exit(f"cogito-mcp: {exc}")
     try:
-        weights = resolve(ns.checkpoint, ns.vocab, download=ns.download,
-                          encoder=ns.encoder, pool=ns.pool)
+        weights = None if ns.lite else resolve(ns.checkpoint, ns.vocab, download=ns.download,
+                                               encoder=ns.encoder, pool=ns.pool)
         ensure_spacy_model(download=ns.download)
     except WeightsError as exc:
         sys.exit(f"cogito-mcp: {exc}")
     except ImportError as exc:
         _exit_missing_dependency(exc)
 
-    store = GraphStore(extractor_factory=lambda: build_extractor(weights, ns),
-                       path=ns.dir / "graph.json")
+    factory = TextOnlyExtractor if ns.lite else (lambda: build_extractor(weights, ns))
+    store = GraphStore(extractor_factory=factory, path=ns.dir / "graph.json")
     store.load()
     # Explicit legacy checkpoints resolve their own encoder inside the extractor, which
     # is built lazily: name it there rather than guessing the default here.
+    if ns.lite:
+        space = "encoder=none (lite)"
+    else:
+        space = _encoder_line(weights.encoder) if weights.encoder else "encoder=from-checkpoints"
     print(f"cogito-mcp: graph {store.path} edges={len(store.edges)} docs={len(store.docs)} "
-          + (_encoder_line(weights.encoder) if weights.encoder else "encoder=from-checkpoints"),
-          file=sys.stderr)
+          + space, file=sys.stderr)
     tools = Tools(store, ns.profile, ns.budget)
     paths = ns.ingest or []
     corpus = sorted(set(store.docs) | {n for p in paths for n in source_names(p)})
     try:
         server = build_server(store, tools, corpus, indexed_at_startup=bool(paths))
-        if paths:
-            tools.index_in_background(paths)
-        server.run("stdio")
+        if getattr(server, "_lowlevel_server", None) is None:   # an SDK without the hook:
+            tools.defer_indexing(paths)                         # index at the first call
+            server.run("stdio")
+        else:
+            serve_stdio(server, (lambda: tools.index_in_background(paths)) if paths else None)
     except ImportError as exc:
         _exit_missing_dependency(exc)
 

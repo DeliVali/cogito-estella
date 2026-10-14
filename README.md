@@ -1,4 +1,4 @@
-# Cogito Estella (v0.17.0)
+# Cogito Estella (v0.18.0)
 
 Knowledge-graph memory for agents. A local model turns documents into `subject relation
 object` facts in one non-autoregressive pass (no LLM tokens), and the `cogito-mcp` server
@@ -48,6 +48,108 @@ Flags: `--encoder sonar` for the SONAR-space heads (research only: `pip install
 "cogito-estella[sonar]"`, CC-BY-NC 4.0 at runtime); `--checkpoint`, `--vocab` and `--pool`
 for local weights; `--device`; `--no-download`. `COGITO_ASK_SCORER=lexical` keeps the
 plain IDF order.
+
+## Small sessions and small models
+
+The full server pays off over long sessions: the encoder and the graph load once and
+every later question is cheap. A short session over a few documents pays that start-up
+in full, and a small model may not use the tools at all. Three switches make a short
+session cheap:
+
+- **`--lite`** indexes sentences only. No encoder or graph head is loaded or downloaded;
+  `ask` keeps its learned ranking, one of whose features is the absence of an encoder
+  cosine. Graph tools have no facts for documents indexed this way, and a full server
+  re-extracts them the next time it ingests them. Cold session on CPU, index plus first
+  answer, answer present in the compact reply:
+
+  | corpus | full | `--lite` |
+  | :--- | :--- | :--- |
+  | README (2.1k tokens), 10 questions | 29.3 s · 2.6 GB · 8/10 | 3.8 s · 0.6 GB · 9/10 |
+  | README + CHANGELOG (9.4k), 22 questions | 67.6 s · 2.8 GB · 20/22 | 4.3 s · 0.7 GB · 21/22 |
+
+  End to end over the README alone (8 questions with an answer, 2 without, a cold
+  `--lite` server, native list/read/grep in every branch): neither Qwen2.5 1.5B nor 3B
+  read the short file by itself (0 of 8 with native tools only); the 1.5B answered 7 of
+  8 with no wrong answer when the client pushed the `context` prompt (946 prompt tokens
+  per question), the 3B 2 of 8 calling `ask` under `--profile compact` and 3 of 8 under
+  push.
+
+  On an independent set the full server keeps a small edge: 8 SQuAD v1.1 Wikipedia
+  articles (4.4k tokens on average, each a fresh session) and their 1,140 human-written
+  questions put the exact answer in the reply 96.2 % of the time with `--lite` and 96.8 %
+  with the full server (7 questions only the full server finds, none the other way;
+  McNemar p = 0.016), at 533 and 561 tokens per reply, against 4.4k for the article.
+  Indexing all eight took 31 s and 715 MB with `--lite`, 479 s and 2.9 GB in full. Use
+  `--lite` for short sessions and keep the full server for long ones.
+
+  End to end on the same articles (48 sampled questions per branch, a fresh `--lite`
+  index per article, Qwen2.5-Instruct Q4_K_M on CPU), against pasting the whole article:
+
+  | model | branch | right | wrong | prompt tokens / question |
+  | :--- | :--- | :--- | :--- | :--- |
+  | 1.5B | whole article in the prompt | 39 | 9 | 4,646 |
+  | 1.5B | `context` push | 35 | 8 | 894 |
+  | 1.5B | `ask` tool (never called) | 4 | 12 | 506 |
+  | 3B | whole article in the prompt | 35 | 11 | 4,646 |
+  | 3B | `context` push | 32 | 5 | 1,004 |
+  | 3B | `ask` tool (called in 41 of 48) | 34 | 5 | 1,494 |
+
+  Paired against the whole article (McNemar), push is not significantly different for
+  either model (p = 0.39 and 0.65) nor is the `ask` tool for the 3B (p = 1), at 3 to 5×
+  fewer tokens; the tool is significantly worse for the 1.5B, which never calls it. The
+  integrator picks the route: `ask` for a model that calls tools, `context` for one that
+  does not.
+- **`--profile compact`** and the **`context` prompt**, below, cut the per-turn cost and
+  reach models that do not call tools.
+- **Sections.** Markdown documents keep the heading path of every sentence, and compact
+  lines name it (`[CHANGELOG.md § 0.9.0 - 2026-09-01] …`): a sentence ranked on its own
+  no longer loses the version or section that gives it meaning (one more answer of 22
+  reaches the reply above, at the same token cost). Documents indexed before this keep
+  working and get their paths when re-ingested, without a new extraction.
+
+```json
+{"mcpServers": {"cogito": {"command": "cogito-mcp",
+  "args": ["--dir", ".cogito", "--lite", "--profile", "compact", "--ingest", "docs"]}}}
+```
+
+A model can only use `ask` if it decides to call it, and small models often do not: in
+the bench below a 1.5B model called no tool at all, under any prompt, and a 3B model
+facing the full seven-tool surface never called `ask` and made up 12 answers out of 24.
+Two ways to get the documents to such a model:
+
+- **Pull, `--profile compact`.** `ask(question)` is the only tool (plus `ingest` when
+  nothing was indexed at startup); its description names the indexed files, and its
+  reply is one tagged passage per line under one plain-language line, which warns when
+  the scorer doubts its best passage. The server widens the budget once by itself when
+  it doubts, and sends the whole corpus when it fits the budget. The tool definitions
+  cost 96 tokens per model turn instead of 961.
+- **Push, the `context` prompt.** An MCP prompt, invoked by the client or the user,
+  never by the model: it returns the question preceded by the compact `ask` reply, to be
+  sent as the user message. It works with a model that calls no tools, and costs nothing
+  in the per-turn definitions.
+
+`--ingest PATH` (repeatable) indexes documents at startup, in the background, so the
+model never has to call `ingest`; reading tools wait for it rather than answer from a
+half-built index. `--budget` sets the token budget of one reply.
+
+Measured on CPU with Qwen2.5-Instruct (Q4_K_M, temperature 0): 22 questions whose exact
+answer is in this repository's README and CHANGELOG (9.4k tokens, the cost of reading
+both before any question) plus 2 with no answer; `list_files`, `read_file` and `grep`
+are available in every branch:
+
+| branch | 1.5B right / wrong | 3B right / wrong | 3B calls `ask` | prompt tokens / question (3B) |
+| :--- | :--- | :--- | :--- | :--- |
+| native tools only | 0 / 0 | 0 / 0 | — | 502 |
+| + full profile | 1 / 4 | 0 / 12 | 0 of 24 | 1,484 |
+| + compact profile | 0 / 2 | 11 / 1 | 17 of 24 | 1,681 |
+| native + `context` push | 13 / 5 | 6 / 4 | — | 1,287 |
+
+One run per branch: a difference of three answers is within run-to-run noise (the 3B
+push branch moved from 9 to 6 between two runs that differed only in line formatting).
+The 1.5B never calls a tool, so its compact row measures nothing new and push is its
+only route. The 3B under push declines passages that do hold the answer; the 1.5B misses
+5 of the 19 answers that reach it, and 3 answers never reach it (a version number that
+lives in a section heading, a table cell, a short README line).
 
 ## Measured
 
@@ -143,7 +245,7 @@ uv run python -m spacy download en_core_web_sm
 uv run pytest tests/
 ```
 
-573 tests with every extra installed; modules that need the `[sonar]` extra and the tests
+607 tests with every extra installed; modules that need the `[sonar]` extra and the tests
 that load a real encoder on CUDA skip themselves without them. Package layout:
 `model/` (decoder heads), `encoders/` (encoder contract, adapters, pooling, canary),
 `mcp/` (store, readers, scorers, server), `integrations/` (the extractor). Training data,

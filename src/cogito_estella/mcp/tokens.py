@@ -30,6 +30,7 @@ class Ledger:
         self.served = 0
         self.calls: dict[str, int] = defaultdict(int)
         self.served_by: dict[str, int] = defaultdict(int)
+        self.schema_tokens = 0          # tool definitions, re-sent with every model turn
 
     def charge(self, tool: str, payload: str) -> int:
         n = ntok(payload)

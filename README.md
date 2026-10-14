@@ -13,8 +13,16 @@ while reading 3 to 5 times fewer tokens and making fewer wrong answers
 pip install cogito-estella        # Python 3.10-3.13, no GPU, no model download
 ```
 
-**Any MCP client** (Claude Code `.mcp.json`, Cursor, Claude Desktop, ...): one line, the
-folder is indexed when the server starts.
+**Set up your agents in one command** (Claude Code, Claude Desktop, Cursor, VS Code,
+Windsurf, Gemini CLI, Codex, opencode): it finds the ones on this machine, shows the
+change, asks before writing and backs up every file it touches.
+
+```bash
+cogito-estella setup docs/          # or, without installing: uvx cogito-estella setup docs/
+```
+
+**Any other MCP client**: `cogito-estella setup --print` prints the entry, or add it by
+hand; the folder is indexed when the server starts.
 
 ```json
 {"mcpServers": {"docs": {"command": "cogito-mcp", "args": ["docs/"]}}}
@@ -30,6 +38,10 @@ from cogito_estella import Estella
 docs = Estella("docs/")                 # indexed in about a second
 prompt = docs.context("When did the embargo end?")   # the question plus its passages
 ```
+
+**Any other harness**, in any language that can run a command:
+`cogito-estella context docs/ "When did the embargo end?"` prints the question with its
+passages (`ask` prints the passages alone); the index is kept in `./.cogito`.
 
 **Which way?** If the model calls tools well, give it the MCP server: it calls `ask` when
 it needs the documents. If it does not (many small models never call a tool), send
@@ -281,7 +293,7 @@ uv run python -m spacy download en_core_web_sm
 uv run pytest tests/
 ```
 
-614 tests with every extra installed; modules that need the `[sonar]` extra and the tests
+630 tests with every extra installed; modules that need the `[sonar]` extra and the tests
 that load a real encoder on CUDA skip themselves without them. Package layout:
 `model/` (decoder heads), `encoders/` (encoder contract, adapters, pooling, canary),
 `mcp/` (store, readers, scorers, server), `integrations/` (the extractor). Training data,

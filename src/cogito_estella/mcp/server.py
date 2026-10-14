@@ -445,7 +445,30 @@ def _exit_missing_dependency(exc: ImportError) -> None:
     sys.exit(f"cogito-mcp: missing dependency {exc.name}; install with: {fix}")
 
 
+def _query(kind: str, argv: list[str]) -> int:
+    """`cogito-estella ask|context PATH... "question"`: the reply on stdout, for a harness
+    in any language that can run a command. The index is kept in ./.cogito between calls."""
+    if len(argv) < 2:
+        print(f"usage: cogito-estella {kind} PATH [PATH ...] \"question\"", file=sys.stderr)
+        return 2
+    *paths, question = argv
+    missing = [p for p in paths if not Path(p).exists()]
+    if missing:
+        print(f"cogito-estella: not found: {', '.join(missing)}", file=sys.stderr)
+        return 2
+    from cogito_estella.estella import Estella
+    docs = Estella(*paths, save_to=".cogito")
+    print(docs.ask(question) if kind == "ask" else docs.context(question))
+    return 0
+
+
 def main(argv=None) -> None:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "setup":
+        from cogito_estella.setup import run
+        sys.exit(run(argv[1:]))
+    if argv and argv[0] in ("ask", "context"):
+        sys.exit(_query(argv[0], argv[1:]))
     ns = parse_args(argv)
     try:                                       # a knob that names no scorer stops the run here,
         resolve_scorer()                       # before a model load makes the failure expensive

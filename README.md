@@ -1,4 +1,4 @@
-# Cogito Estella (v0.17.0)
+# Cogito Estella (v0.19.0)
 
 Your agent reads a few hundred tokens instead of whole documents. Point Estella at your
 files; for every question it hands the model only the passages that answer it, each

@@ -4,6 +4,8 @@ Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemV
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-14
+
 ### Added
 - **`cogito-estella setup`**: registers the server with the agents found on this machine (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Gemini CLI, Codex, opencode; one table row per client), with absolute paths, a preview, approval before writing and a backup of every file it changes; a file that is not plain JSON is left alone. `--print` gives the entry for any other MCP client, and `cogito-estella ask|context PATH "question"` prints the reply for a harness in any language. A test launches the entry setup writes and gets an answer over MCP.
 - **One-line start.** `pip install cogito-estella` no longer pulls torch: the base install (about 300 MB) runs the lite server; the graph model moves to the `[full]` extra (`[mcp]` stays as its alias). `cogito-mcp docs/` (or `uvx cogito-estella docs/`) indexes the folder and serves the small-session setup (`--lite --profile compact`; `--full` for the graph model). `from cogito_estella import Estella; Estella("docs/").context(question)` gives any Python harness the question with its passages, no MCP needed. Python 3.10–3.13 (was 3.12 only); verified on all four in clean environments without torch. Importing the server no longer loads torch (7 s to 0.3 s), and a missing package names the exact install command.

@@ -119,6 +119,27 @@ class TextOnlyExtractor:
         return [[] for _ in texts]
 
 
+LONG_SENTENCE = 1000            # chars above which a lite "sentence" is cut at spaces
+CHUNK = 400                     # target chars of each piece
+
+
+def _chunks(sentence: str) -> list[str]:
+    """A sentence longer than LONG_SENTENCE in pieces of about CHUNK chars, cut at spaces:
+    a script without sentence stops otherwise leaves one passage too big for any budget."""
+    if len(sentence) <= LONG_SENTENCE:
+        return [sentence]
+    out, cur = [], ""
+    for word in sentence.split(" "):
+        if cur and len(cur) + 1 + len(word) > CHUNK:
+            out.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}" if cur else word
+    if cur:
+        out.append(cur)
+    return out
+
+
 def _full_line(src: str, si: int, text: str) -> str:
     return f'{src} s{si}: "{text}"'
 
@@ -277,6 +298,8 @@ class GraphStore:
             nlp = self.extractor._scanner()
         sents = ([s.text.strip() for s in nlp(text).sents] if nlp
                  else [s.strip() for s in re.split(r"(?<=[.!?])\s+", text)])
+        if getattr(self.extractor, "lite", False):     # Thai and similar end sentences
+            sents = [c for s in sents for c in _chunks(s)]   # with a space, not a stop
         out, cursor = [], 0
         for s in sents:
             if not s:

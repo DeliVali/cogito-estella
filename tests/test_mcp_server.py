@@ -820,3 +820,12 @@ def test_estella_takes_long_raw_text_as_text(nlp):
     docs = Estella()
     docs.add("A sentence about the encoder. " * 200, name="long")
     assert "long" in docs.store.docs
+
+
+def test_a_lite_text_without_sentence_stops_is_cut_into_passages(nlp):
+    from cogito_estella.mcp.store import CHUNK, TextOnlyExtractor
+    store = GraphStore(extractor_factory=TextOnlyExtractor)
+    store.ingest_text(" ".join(f"คำ{i}" for i in range(600)), "th")
+    sents = store.docs["th"]["sents"]
+    assert len(sents) > 1 and all(len(s) <= CHUNK + 10 for s, _ in sents)
+    assert sents[1][1] > 0                                 # offsets still point into the text

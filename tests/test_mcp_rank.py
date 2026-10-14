@@ -193,3 +193,39 @@ def test_sonar_scores_never_leave_the_unit_range():
     emb = np.asarray([[1.001, 0.0], [-1.001, 0.0]], dtype=np.float32)
     sc = SonarScorer(emb, _fake_encode([1.0, 0.0]))
     assert sc.score("q") == pytest.approx([1.0, 0.0])
+
+
+# -- any language: Unicode words, stems, unspaced scripts ---------------------------------
+
+def test_ascii_text_keeps_the_original_tokens():
+    from cogito_estella.mcp.rank import tokenize
+    assert tokenize("The patches losses re-ranker GPT-4 model") == \
+        ["patch", "loss", "re-ranker", "gpt-4", "model"]
+
+
+def test_accented_words_stay_whole_and_also_index_a_stem():
+    from cogito_estella.mcp.rank import tokenize
+    toks = tokenize("La canción ganó en España")
+    assert "canción" in toks and "canc" in toks and "españa" in toks
+    assert "canci" not in toks                            # no cut at the accent
+
+
+def test_non_latin_scripts_produce_words():
+    from cogito_estella.mcp.rank import tokenize
+    assert "обработка" in tokenize("Обработка естественного языка")
+    assert "معالجة" in tokenize("معالجة اللغات الطبيعية")
+    assert tokenize("प्राकृतिक भाषा")[0] == "प्राकृतिक"     # vowel signs stay in the word
+
+
+def test_unspaced_scripts_are_indexed_as_character_pairs():
+    from cogito_estella.mcp.rank import tokenize
+    assert tokenize("自然言語") == ["自然", "然言", "言語"]
+    thai = tokenize("ภาษาไทย")
+    assert thai and all(len(t) >= 2 for t in thai)
+
+
+def test_a_question_in_spanish_finds_its_inflected_answer():
+    from cogito_estella.mcp.rank import LexicalScorer, rank
+    sents = ["Los precios del petróleo subieron mucho.", "El clima fue templado."]
+    scores = LexicalScorer(sents).score("¿Qué pasó con el precio del petróleo?")
+    assert rank(scores)[0] == 0

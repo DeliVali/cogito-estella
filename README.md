@@ -43,6 +43,11 @@ prompt = docs.context("When did the embargo end?")   # the question plus its pas
 `cogito-estella context docs/ "When did the embargo end?"` prints the question with its
 passages (`ask` prints the passages alone); the index is kept in `./.cogito`.
 
+**Languages.** Passages are found in any language: on XQuAD (the same questions in 11
+languages) the answer reaches the reply 96.7 % of the time in English, 90–96 % in Spanish,
+German, Turkish, Vietnamese, Russian and Chinese, 82–87 % in Greek, Arabic and Hindi, and
+77 % in Thai. The graph model of the full server is English-only.
+
 **Which way?** If the model calls tools well, give it the MCP server: it calls `ask` when
 it needs the documents. If it does not (many small models never call a tool), send
 `docs.context(question)` as the user message, or use the server's `context` prompt: the
@@ -293,7 +298,7 @@ uv run python -m spacy download en_core_web_sm
 uv run pytest tests/
 ```
 
-630 tests with every extra installed; modules that need the `[sonar]` extra and the tests
+637 tests with every extra installed; modules that need the `[sonar]` extra and the tests
 that load a real encoder on CUDA skip themselves without them. Package layout:
 `model/` (decoder heads), `encoders/` (encoder contract, adapters, pooling, canary),
 `mcp/` (store, readers, scorers, server), `integrations/` (the extractor). Training data,

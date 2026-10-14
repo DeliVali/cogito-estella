@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections.abc import Iterable, Sequence
 
 import numpy as np
@@ -52,10 +53,74 @@ def singular_forms(word: str) -> list[str]:
     return out
 
 
-def tokenize(text: str) -> list[str]:
-    """Lowercase content words, singularized; function words dropped."""
+# scripts written without spaces between words: a run of them is indexed as overlapping
+# character pairs, the usual unit for retrieval in Chinese, Japanese and Thai
+_UNSPACED = ((0x0E00, 0x0EFF), (0x1000, 0x109F), (0x1780, 0x17FF), (0x3040, 0x30FF),
+             (0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0x20000, 0x2FFFF))
+PREFIX = 4                      # chars of a non-ASCII word also indexed as its stem
+_FOLD_BELOW = 0            # accents are kept: folding them cost Vietnamese and Greek answers
+
+
+def _unspaced(ch: str) -> bool:
+    o = ord(ch)
+    return any(lo <= o <= hi for lo, hi in _UNSPACED)
+
+
+def _words(text: str) -> list[str]:
+    """Unicode words of `text`: letters, digits and combining marks of any script (a Hindi
+    or Thai vowel sign belongs to its word), inner hyphens kept, accents folded on Latin
+    and Greek so `canción` and `cancion` meet; unspaced scripts yield character pairs."""
+    text = unicodedata.normalize("NFKC", text.lower())
     out: list[str] = []
-    for raw in _WORD.findall(text.lower()):
+    word: list[str] = []
+    run: list[str] = []
+
+    def flush():
+        if word:
+            out.append("".join(word).strip("-"))
+            word.clear()
+        if run:
+            out.extend(["".join(run)] if len(run) == 1 else
+                       [run[i] + run[i + 1] for i in range(len(run) - 1)])
+            run.clear()
+
+    for ch in unicodedata.normalize("NFKD", text):
+        cat = unicodedata.category(ch)
+        if cat == "Mn" and word and ord(word[-1][-1]) < _FOLD_BELOW:
+            continue                                   # an accent on a Latin/Greek letter
+        if cat[0] == "M":                              # a mark belongs to its letter
+            if run:
+                run[-1] += ch
+            elif word:
+                word.append(ch)
+            continue
+        if cat[0] in "LN":
+            if _unspaced(ch):
+                if word:
+                    flush()
+                run.append(ch)
+            else:
+                if run:
+                    flush()
+                word.append(ch)
+        elif ch == "-" and word:
+            word.append(ch)
+        else:
+            flush()
+    flush()
+    return [unicodedata.normalize("NFC", w) for w in out if w]
+
+
+def tokenize(text: str) -> list[str]:
+    """Lowercase content words, singularized; function words dropped. ASCII text takes
+    the original path unchanged; any other text is split by `_words`."""
+    out: list[str] = []
+    if text.isascii():
+        raws = _WORD.findall(text.lower())
+    else:                       # a short prefix stands in for a stem: inflected and
+        raws = [x for w in _words(text)          # compound words still meet (XQuAD:
+                for x in ((w, w[:PREFIX]) if len(w) > PREFIX + 1 else (w,))]  # +2-9 pts)
+    for raw in raws:
         if raw in STOPWORDS:
             continue
         tok = singular(raw)

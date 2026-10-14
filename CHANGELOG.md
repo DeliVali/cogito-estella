@@ -4,6 +4,9 @@ Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemV
 
 ## [Unreleased]
 
+### Added
+- **Any language in `ask`.** Text that is not ASCII is split into Unicode words of any script (vowel signs stay in their word), each also indexed by a 4-character prefix that stands in for a stem, and scripts written without spaces (Chinese, Japanese, Thai, ...) as overlapping character pairs; ASCII text keeps the original tokens. A lite "sentence" over 1,000 characters is cut at spaces (Thai ends sentences with a space). XQuAD (the same 1,190 questions in 11 languages), answer in the compact reply: English 96.7 % unchanged; Spanish 93.2 → 95.3, German 87.7 → 90.5, Turkish 88.9 → 92.9, Vietnamese 86.0 → 95.8, Russian 13.9 → 91.7, Greek 22.5 → 86.8, Arabic 9.4 → 81.8, Hindi 11.6 → 85.7, Chinese 15.8 → 93.4, Thai 0 → 76.8. Folding accents was measured and dropped (it cost Vietnamese and Greek answers); the prefix length was chosen on XQuAD itself (4 against 5 and 6). English SQuAD moves by one question in each mode (McNemar p = 1).
+
 ## [0.19.0] - 2026-10-14
 
 ### Added

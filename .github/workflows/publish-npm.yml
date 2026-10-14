@@ -1,0 +1,29 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write     # provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Package version must match the pyproject version
+        run: |
+          py=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
+          js=$(node -p "require('./npm/package.json').version")
+          test "$py" = "$js" || { echo "pyproject $py != npm $js"; exit 1; }
+      - name: Publish
+        working-directory: npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

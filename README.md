@@ -1,4 +1,4 @@
-# Cogito Estella (v0.19.0)
+# Cogito Estella (v0.19.1)
 
 Your agent reads a few hundred tokens instead of whole documents. Point Estella at your
 files; for every question it hands the model only the passages that answer it, each
@@ -21,6 +21,14 @@ change, asks before writing and backs up every file it touches.
 cogito-estella setup docs/          # or, without installing: uvx cogito-estella setup docs/
 ```
 
+**From Node or TypeScript**: `npx -y cogito-estella setup docs/`, or in an MCP config
+`{"command": "npx", "args": ["-y", "cogito-estella", "docs/"]}`. The npm package is a
+launcher for the Python one: it needs `uv` (or `pip install cogito-estella`) on the machine.
+
+**Over HTTP** (a harness that cannot spawn a process, any language): `cogito-mcp docs/ --http 8765`
+serves MCP at `http://127.0.0.1:8765/mcp` and plain `POST /ask` / `POST /context` with
+`{"question": "..."}` returning text. No authentication: keep it on localhost or behind your proxy.
+
 **Any other MCP client**: `cogito-estella setup --print` prints the entry, or add it by
 hand; the folder is indexed when the server starts.
 
@@ -37,6 +45,7 @@ from cogito_estella import Estella
 
 docs = Estella("docs/")                 # indexed in about a second
 prompt = docs.context("When did the embargo end?")   # the question plus its passages
+docs.ask("Who signed it?", deep=True)   # facts + encoder ranking; the model loads once, then stays
 ```
 
 **Any other harness**, in any language that can run a command:

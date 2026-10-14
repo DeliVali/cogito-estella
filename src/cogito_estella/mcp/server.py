@@ -160,11 +160,15 @@ class Tools:
 
     # -- tools -------------------------------------------------------------------------
     def ask(self, question: str, budget: int | None = None, use_dense: bool = False,
-            use_sonar: bool = False) -> str:
+            use_sonar: bool = False, deep: bool = False) -> str:
         budget = self.budget if budget is None else _clamp_budget(budget)
         wait = self._not_ready()
         if wait:
             return self._charge("ask", wait)
+        if deep:
+            why = self.store.use_full()
+            if why:
+                return self._charge("ask", why)
         scorer = "dense" if (use_dense or use_sonar) else self.scorer   # use_sonar: older name
         if self.profile == "compact":
             return self._charge("ask", self.store.ask_compact(
@@ -264,6 +268,41 @@ def serve_stdio(server, on_claimed=None) -> None:
     anyio.run(run)
 
 
+def parse_bind(spec: str) -> tuple[str, int]:
+    host, _, port = spec.rpartition(":")
+    if not port.isdigit() or not 0 < int(port) < 65536:
+        raise ValueError(f"--http expects [HOST:]PORT, got {spec!r}")
+    return host or "127.0.0.1", int(port)
+
+
+def register_rest(mcp, t: Tools) -> None:
+    """`POST /ask` and `POST /context` with `{"question": "...", "budget": 600}`, text out:
+    the same replies as the tools, for a harness that only speaks HTTP."""
+    import anyio
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    def route(name, fn):
+        async def handler(request):
+            try:
+                body = await request.json()
+                question = body["question"]
+                if not isinstance(question, str) or not question.strip():
+                    raise ValueError
+                kwargs = {"budget": body["budget"]} if "budget" in body and name == "ask" else {}
+            except (ValueError, KeyError, TypeError):
+                return JSONResponse({"error": 'send {"question": "..."}'}, status_code=400)
+            return PlainTextResponse(await anyio.to_thread.run_sync(
+                lambda: fn(question, **kwargs)))
+        mcp.custom_route(f"/{name}", methods=["POST"], name=name)(handler)
+
+    route("ask", t.ask)
+    route("context", t.context)
+
+    @mcp.custom_route("/health", methods=["GET"], name="health")
+    async def health(request):
+        return PlainTextResponse("ok")
+
+
 def _register_context(mcp, t: Tools) -> None:
     """A prompt, not a tool: the client or the user invokes it, never the model, and it is
     not part of the definitions re-sent on every model turn."""
@@ -314,7 +353,7 @@ def _register_full(mcp, t: Tools) -> None:
 
     @mcp.tool()
     def ask(question: str, budget: int = default_budget, use_dense: bool = False,
-            use_sonar: bool = False) -> str:
+            use_sonar: bool = False, deep: bool = False) -> str:
         """Start here for any question: graph facts, then a '--' line, then the source
         sentences that answer it, ranked. `budget` caps the reply in tokens (100-4000,
         40 % facts / 60 % sentences). Sentences are shortlisted by IDF and ordered by the
@@ -326,8 +365,10 @@ def _register_full(mcp, t: Tools) -> None:
         before answering. Once any of them names the specific fact asked, even briefly or
         in passing, state it — do not keep answering NOT FOUND once you have found it. If
         they only surface something related without naming that fact, answer NOT FOUND;
-        do not substitute a nearby or similar-sounding fact for the one actually asked."""
-        return t.ask(question, budget, use_dense, use_sonar)
+        do not substitute a nearby or similar-sounding fact for the one actually asked.
+        deep=True loads the graph model on the first use (slow once, then kept) and adds
+        facts and encoder ranking to documents indexed without it."""
+        return t.ask(question, budget, use_dense, use_sonar, deep)
 
     @mcp.tool()
     def ingest(path_or_text: str, source: str = "") -> str:
@@ -397,6 +438,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="index sentences only: no graph model is loaded or downloaded, so "
                          "the server starts at once; `ask` keeps its learned ranking, the "
                          "graph tools have no facts for documents indexed this way")
+    ap.add_argument("--http", metavar="[HOST:]PORT",
+                    help="serve over HTTP instead of stdio, for any client that cannot spawn "
+                         "a process: MCP at /mcp, plus POST /ask and /context with "
+                         '{"question": "..."} (HOST defaults to 127.0.0.1; there is no '
+                         "authentication, so keep it on localhost or behind your own proxy)")
     ap.add_argument("--budget", type=int, default=600,
                     help=f"token budget of one `ask` reply ({ASK_BUDGET_MIN}-{ASK_BUDGET_MAX}; "
                          "default 600)")
@@ -487,8 +533,16 @@ def main(argv=None) -> None:
     except ImportError as exc:
         _exit_missing_dependency(exc)
 
+    def full_factory():                        # lite sessions load it on `deep`, once
+        w = weights or resolve(ns.checkpoint, ns.vocab, download=ns.download,
+                               encoder=ns.encoder, pool=ns.pool)
+        ensure_spacy_model(download=ns.download)
+        return build_extractor(w, ns)
+
     factory = TextOnlyExtractor if ns.lite else (lambda: build_extractor(weights, ns))
-    store = GraphStore(extractor_factory=factory, path=ns.dir / "graph.json")
+    has_torch = importlib.util.find_spec("torch") is not None
+    store = GraphStore(extractor_factory=factory, path=ns.dir / "graph.json",
+                       full_factory=full_factory if ns.lite and has_torch else None)
     store.load()
     # Explicit legacy checkpoints resolve their own encoder inside the extractor, which
     # is built lazily: name it there rather than guessing the default here.
@@ -503,6 +557,21 @@ def main(argv=None) -> None:
     corpus = sorted(set(store.docs) | {n for p in paths for n in source_names(p)})
     try:
         server = build_server(store, tools, corpus, indexed_at_startup=bool(paths))
+        if ns.http:
+            try:
+                host, port = parse_bind(ns.http)
+            except ValueError as exc:
+                sys.exit(f"cogito-mcp: {exc}")
+            register_rest(server, tools)
+            if paths:
+                tools.index_in_background(paths)
+            if host not in ("127.0.0.1", "localhost", "::1"):
+                print(f"cogito-mcp: warning: {host} is reachable by other machines and "
+                      "there is no authentication", file=sys.stderr)
+            print(f"cogito-mcp: http://{host}:{port}/mcp (MCP), POST /ask, POST /context",
+                  file=sys.stderr)
+            server.run("streamable-http", host=host, port=port)
+            return
         if getattr(server, "_lowlevel_server", None) is None:   # an SDK without the hook:
             tools.defer_indexing(paths)                         # index at the first call
             server.run("stdio")

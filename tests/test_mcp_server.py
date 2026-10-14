@@ -1,4 +1,5 @@
 """Tool bodies over a store (offline) and the stdio protocol smoke (integration)."""
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from cogito_estella.mcp.server import (
 )
 from cogito_estella.mcp.store import GraphStore
 
+needs_full = pytest.mark.skipif(importlib.util.find_spec("torch") is None,
+                                reason="the graph model extra is not installed")
 DOC = "The generated concepts are decoded by SONAR. The encoder maps text to a vector."
 TRIPLES = {
     "The generated concepts are decoded by SONAR.": [("concept", "improve", "sonar")],
@@ -210,6 +213,7 @@ def _resolved(checkpoints=(), pool=None, encoder="m2m100-pool", point=None):
                            point)
 
 
+@needs_full
 def test_main_missing_dependency_at_weight_resolution_exits_with_install_hint(monkeypatch, tmp_path):
     import cogito_estella.mcp.server as srv
 
@@ -222,6 +226,7 @@ def test_main_missing_dependency_at_weight_resolution_exits_with_install_hint(mo
     assert "spacy" in str(exc.value) and "pip install -U cogito-estella" in str(exc.value)
 
 
+@needs_full
 def test_main_missing_mcp_sdk_exits_with_install_hint(monkeypatch, tmp_path):
     import cogito_estella.mcp.server as srv
 
@@ -235,6 +240,7 @@ def test_main_missing_mcp_sdk_exits_with_install_hint(monkeypatch, tmp_path):
     assert "mcp" in str(exc.value) and "pip install -U cogito-estella" in str(exc.value)
 
 
+@needs_full
 def test_the_startup_line_names_the_encoder_and_its_revision(monkeypatch, tmp_path, capsys):
     """Operators must see which space the served graph is in before any tool call."""
     import cogito_estella.mcp.server as srv
@@ -252,6 +258,7 @@ def test_the_startup_line_names_the_encoder_and_its_revision(monkeypatch, tmp_pa
     assert "encoder=m2m100-pool" in err and f"revision={rev}" in err and rev != "unknown"
 
 
+@needs_full
 def test_the_startup_line_does_not_guess_the_encoder_of_explicit_checkpoints(
         monkeypatch, tmp_path, capsys):
     """Legacy `.pt` paths resolve to sonar inside the extractor: announcing the process
@@ -319,6 +326,7 @@ def test_parse_args_accepts_pooling_weights():
     assert parse_args(["--pool", "w/pool.pt"]).pool == Path("w/pool.pt")
 
 
+@needs_full
 def test_build_extractor_stops_the_server_when_the_pooling_weights_are_missing(monkeypatch):
     import cogito_estella.integrations.llamaindex_connector as lc
     from cogito_estella.encoders.pooling import PoolWeightsError
@@ -350,6 +358,7 @@ class _StubExtractor:
         self.canaries += 1
 
 
+@needs_full
 def test_build_extractor_forwards_the_flags_and_runs_the_canary_once(monkeypatch):
     import cogito_estella.integrations.llamaindex_connector as lc
     monkeypatch.setattr(lc, "CogitoGraphExtractor", _StubExtractor)
@@ -363,6 +372,7 @@ def test_build_extractor_forwards_the_flags_and_runs_the_canary_once(monkeypatch
                        "adj_threshold": None}
 
 
+@needs_full
 def test_build_extractor_forwards_the_resolved_pool_not_the_flag(monkeypatch):
     """`--pool` may be unset: the pooling weights the resolver downloaded are the ones
     the encoder must load."""
@@ -373,6 +383,7 @@ def test_build_extractor_forwards_the_resolved_pool_not_the_flag(monkeypatch):
     assert ex.args["encoder"] is None               # legacy checkpoints keep deciding
 
 
+@needs_full
 def test_build_extractor_applies_the_published_operating_point(monkeypatch):
     """Thresholds the publisher validated the weights under, not the module table."""
     import cogito_estella.integrations.llamaindex_connector as lc
@@ -381,6 +392,7 @@ def test_build_extractor_applies_the_published_operating_point(monkeypatch):
     assert (ex.args["threshold"], ex.args["adj_threshold"]) == (0.2, 0.6)
 
 
+@needs_full
 def test_build_extractor_names_the_encoder_the_checkpoints_resolved(monkeypatch, capsys):
     """With explicit legacy paths the startup line stays silent about the space; the
     extractor announces the one it actually built."""
@@ -391,6 +403,7 @@ def test_build_extractor_names_the_encoder_the_checkpoints_resolved(monkeypatch,
     assert "encoder=sonar" in err and "encoder=m2m100-pool" not in err
 
 
+@needs_full
 @pytest.mark.parametrize("where", ["init", "canary"])
 def test_build_extractor_stops_the_server_on_an_encoder_mismatch(monkeypatch, where):
     import cogito_estella.integrations.llamaindex_connector as lc

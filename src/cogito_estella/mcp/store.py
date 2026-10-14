@@ -42,6 +42,10 @@ ASK_MAX_IDS = 8                 # ids per fact line in `ask`: one hub group must
 DENSE_COS_FLOOR = 0.2           # below this cosine a sentence is not about the question
 DENSE_FLOOR = (DENSE_COS_FLOOR + 1.0) / 2.0        # the same floor on the scorer's [0, 1] scale
 DENSE_OFFSET = 1.0              # embedded rows rank above lexical ones: no shared origin
+NEIGHBOR_TOP = 2                # best sentences whose successor is pulled up with them
+NEIGHBOR_WEIGHT = 0.9           # successor score as a share of its predecessor's
+# a sentence ending here is cut mid-sentence: the splitter joins it to the next one
+_ABBREV_END = re.compile(r"(?:\bet al|\be\.g|\bi\.e|\bFig|\bTab|\bEq|\bvs|\bcf|\bSec|\bNo)\.[\],)]*$")
 LOW_CONFIDENCE = 0.3            # learned p= under which the reply probably misses the answer
 ASK_STYLES = ("full", "compact")
 # compact replies speak plain language at the point of use: a small model follows a line
@@ -253,10 +257,27 @@ class _AskSnapshot:
         return si / max(self.doc_sents.get(src, 1) - 1, 1)
 
 
+def _pull_up_successors(scores, keys):
+    """The sentence after each of the best ones scores just below it: an answer often sits in
+    the next sentence, which opens with a pronoun and shares no word with the question."""
+    top = sorted(range(len(scores)), key=lambda i: -scores[i])[:NEIGHBOR_TOP]
+    where = {k: i for i, k in enumerate(keys)}
+    out = list(scores)
+    for i in top:
+        if scores[i] <= 0:
+            break
+        j = where.get((keys[i][0], keys[i][1] + 1))
+        if j is not None:
+            out[j] = max(out[j], NEIGHBOR_WEIGHT * scores[i])
+    return out
+
+
 class GraphStore:
-    def __init__(self, extractor=None, extractor_factory=None, path: Path | None = None):
+    def __init__(self, extractor=None, extractor_factory=None, path: Path | None = None,
+                 full_factory=None):
         self._ex = extractor
         self._factory = extractor_factory
+        self._full_factory = full_factory          # loaded once by use_full(), then kept
         self.path = Path(path) if path else None
         self.edges: dict[int, dict] = {}
         self.next_id = 0
@@ -291,6 +312,62 @@ class GraphStore:
                 with _quiet():                     # stdout is the MCP wire
                     self._ex = self._factory()
 
+    @property
+    def is_lite(self) -> bool:
+        """True while no graph model serves this store (nothing is loaded to find out)."""
+        if self._ex is not None:
+            return bool(getattr(self._ex, "lite", False))
+        return bool(getattr(self._factory, "lite", False))
+
+    def use_full(self) -> str | None:
+        """Load the graph model once and extract facts and embeddings for every lite
+        document; the model then stays resident, so alternating lite and full questions
+        never pays a second load. Returns why it could not, or None."""
+        if not self.is_lite:
+            return None
+        if self._full_factory is None:
+            return "the graph model is not available here: pip install 'cogito-estella[full]'"
+        with self._ex_lock:
+            if getattr(self._ex, "lite", False) or self._ex is None:
+                try:
+                    with _quiet():                 # stdout is the MCP wire
+                        ex = self._full_factory()
+                except (Exception, SystemExit) as exc:   # noqa: BLE001 - a failed load must not stop the server
+                    return f"the graph model could not be loaded ({exc})"
+                self._ex = ex
+        with self._lock:
+            lite_docs = [s for s, d in self.docs.items() if d.get("lite")]
+            for s in lite_docs:
+                # a file is read again so the full model splits it with its own scanner,
+                # exactly as a full index would; raw text keeps its stored sentences
+                if not (Path(s).is_file() and self.ingest_path(Path(s), save=False)
+                        and not self.docs[s].get("lite")):
+                    self._reextract(s)
+            if lite_docs:
+                self.save()
+        return None
+
+    def _reextract(self, source: str) -> None:
+        """Facts and embeddings for a lite document, from the sentences it stored."""
+        prev = self.docs[source]
+        sents = [(s, o) for s, o in prev["sents"]]
+        texts = [s for s, _ in sents]
+        offsets = [o for _, o in sents]
+        ex = self._ex
+        recs_per: list[list[dict]] = []
+        with _quiet():
+            for i in range(0, len(texts), BATCH):
+                recs_per.extend(ex.extract_batch_with_provenance(
+                    texts[i:i + BATCH], doc_offsets=offsets[i:i + BATCH]))
+        for k, recs in enumerate(recs_per):
+            for rec in recs:
+                rec.pop("sentence", None)
+                rec.update(id=self.next_id, source=source, sent_idx=k)
+                self._add_edge(rec)
+        prev.pop("lite", None)
+        self._embed_source(ex, source, texts)
+        self._invalidate_index()
+
     # -- ingestion -----------------------------------------------------------
     def split(self, text: str) -> list[tuple[str, int]]:
         """(sentence, absolute char offset) pairs; regex fallback without spaCy."""
@@ -306,7 +383,10 @@ class GraphStore:
                 continue
             i = text.find(s, cursor)
             i = cursor if i < 0 else i
-            out.append((s, i))
+            if out and _ABBREV_END.search(out[-1][0]):
+                out[-1] = (text[out[-1][1]:i + len(s)].strip(), out[-1][1])
+            else:
+                out.append((s, i))
             cursor = i + len(s)
         return out
 
@@ -359,7 +439,7 @@ class GraphStore:
             return IngestResult(source, status, len(sents), n_new, raw, graph_tok,
                                 round(raw / max(graph_tok, 1), 1), round(time.time() - t0, 2))
 
-    def ingest_path(self, path: str | Path) -> list[IngestResult | str]:
+    def ingest_path(self, path: str | Path, save: bool = True) -> list[IngestResult | str]:
         """Ingest a file or directory; one IngestResult per document, or an
         error line `source=<name> error=<message>` (unreadable or empty).
         Saves once at the end, not once per document."""
@@ -376,7 +456,8 @@ class GraphStore:
             if not out:
                 out.append(f"source={path} error=no supported documents "
                            "(txt, md, html, htm, pdf)")
-            self.save()
+            if save:
+                self.save()
         return out
 
     def _add_edge(self, rec: dict) -> None:
@@ -642,6 +723,7 @@ class GraphStore:
             self._drop_foreign_embeddings(self.extractor)
         lex, snap, edges = self._ask_snapshot(question, dense=requested != "lexical")
         scores, name, conf = self._score_sentences(question, lex, snap, requested, budget)
+        scores = _pull_up_successors(scores, snap.keys)
         if not snap.ents and not any(s > 0 for s in scores):
             return (COMPACT_NONE if style == "compact" else f"no material for '{question}'"), None
         if style == "compact":

@@ -74,9 +74,13 @@ session cheap:
   per question), the 3B 2 of 8 calling `ask` under `--profile compact` and 3 of 8 under
   push.
 
-  One corpus: on it the encoder cosine and the graph's provenance bonus add nothing to
-  `ask`. Whether they do on longer technical papers, where the learned scorer was fitted,
-  is not measured here; keep the full server for long sessions.
+  On an independent set the full server keeps a small edge: 8 SQuAD v1.1 Wikipedia
+  articles (4.4k tokens on average, each a fresh session) and their 1,140 human-written
+  questions put the exact answer in the reply 96.2 % of the time with `--lite` and 96.8 %
+  with the full server (7 questions only the full server finds, none the other way;
+  McNemar p = 0.016), at 533 and 561 tokens per reply, against 4.4k for the article.
+  Indexing all eight took 31 s and 715 MB with `--lite`, 479 s and 2.9 GB in full. Use
+  `--lite` for short sessions and keep the full server for long ones.
 - **`--profile compact`** and the **`context` prompt**, below, cut the per-turn cost and
   reach models that do not call tools.
 - **Sections.** Markdown documents keep the heading path of every sentence, and compact

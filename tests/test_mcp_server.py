@@ -813,3 +813,10 @@ def test_estella_keeps_its_index_when_asked(tmp_path, nlp):
     Estella(tmp_path / "a.txt", save_to=tmp_path / "idx")
     again = Estella(save_to=tmp_path / "idx")
     assert str(tmp_path / "a.txt") in again.store.docs
+
+
+def test_estella_takes_long_raw_text_as_text(nlp):
+    from cogito_estella import Estella
+    docs = Estella()
+    docs.add("A sentence about the encoder. " * 200, name="long")
+    assert "long" in docs.store.docs

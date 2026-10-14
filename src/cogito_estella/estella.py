@@ -39,8 +39,9 @@ class Estella:
 
     def add(self, path_or_text: str | Path, name: str = "") -> None:
         """Index a file, a directory, or raw text (named `name`)."""
-        p = Path(path_or_text)
-        if isinstance(path_or_text, Path) or p.exists():
+        from cogito_estella.mcp.server import _existing_path   # raw text is never a path
+        p = path_or_text if isinstance(path_or_text, Path) else _existing_path(path_or_text)
+        if p is not None:
             self.store.ingest_path(p)
         else:
             self.store.ingest_text(str(path_or_text), name or f"text{len(self.store.docs) + 1}")

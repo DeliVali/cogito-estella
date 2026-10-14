@@ -233,9 +233,11 @@ class _AskSnapshot:
 
 
 class GraphStore:
-    def __init__(self, extractor=None, extractor_factory=None, path: Path | None = None):
+    def __init__(self, extractor=None, extractor_factory=None, path: Path | None = None,
+                 full_factory=None):
         self._ex = extractor
         self._factory = extractor_factory
+        self._full_factory = full_factory          # loaded once by use_full(), then kept
         self.path = Path(path) if path else None
         self.edges: dict[int, dict] = {}
         self.next_id = 0
@@ -269,6 +271,58 @@ class GraphStore:
                     raise RuntimeError("GraphStore needs an extractor or an extractor_factory")
                 with _quiet():                     # stdout is the MCP wire
                     self._ex = self._factory()
+
+    @property
+    def is_lite(self) -> bool:
+        """True while no graph model serves this store (nothing is loaded to find out)."""
+        if self._ex is not None:
+            return bool(getattr(self._ex, "lite", False))
+        return bool(getattr(self._factory, "lite", False))
+
+    def use_full(self) -> str | None:
+        """Load the graph model once and extract facts and embeddings for every lite
+        document; the model then stays resident, so alternating lite and full questions
+        never pays a second load. Returns why it could not, or None."""
+        if not self.is_lite:
+            return None
+        if self._full_factory is None:
+            return "the graph model is not available here: pip install 'cogito-estella[full]'"
+        with self._ex_lock:
+            if getattr(self._ex, "lite", False) or self._ex is None:
+                try:
+                    with _quiet():                 # stdout is the MCP wire
+                        ex = self._full_factory()
+                except (Exception, SystemExit) as exc:   # noqa: BLE001 - a failed load must not stop the server
+                    return f"the graph model could not be loaded ({exc})"
+                self._ex = ex
+        with self._lock:
+            lite_docs = [s for s, d in self.docs.items() if d.get("lite")]
+            for s in lite_docs:
+                self._reextract(s)
+            if lite_docs:
+                self.save()
+        return None
+
+    def _reextract(self, source: str) -> None:
+        """Facts and embeddings for a lite document, from the sentences it stored."""
+        prev = self.docs[source]
+        sents = [(s, o) for s, o in prev["sents"]]
+        texts = [s for s, _ in sents]
+        offsets = [o for _, o in sents]
+        ex = self._ex
+        recs_per: list[list[dict]] = []
+        with _quiet():
+            for i in range(0, len(texts), BATCH):
+                recs_per.extend(ex.extract_batch_with_provenance(
+                    texts[i:i + BATCH], doc_offsets=offsets[i:i + BATCH]))
+        for k, recs in enumerate(recs_per):
+            for rec in recs:
+                rec.pop("sentence", None)
+                rec.update(id=self.next_id, source=source, sent_idx=k)
+                self._add_edge(rec)
+        prev.pop("lite", None)
+        self._embed_source(ex, source, texts)
+        self._invalidate_index()
 
     # -- ingestion -----------------------------------------------------------
     def split(self, text: str) -> list[tuple[str, int]]:

@@ -37,6 +37,7 @@ from cogito_estella import Estella
 
 docs = Estella("docs/")                 # indexed in about a second
 prompt = docs.context("When did the embargo end?")   # the question plus its passages
+docs.ask("Who signed it?", deep=True)   # facts + encoder ranking; the model loads once, then stays
 ```
 
 **Any other harness**, in any language that can run a command:

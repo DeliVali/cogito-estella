@@ -160,11 +160,15 @@ class Tools:
 
     # -- tools -------------------------------------------------------------------------
     def ask(self, question: str, budget: int | None = None, use_dense: bool = False,
-            use_sonar: bool = False) -> str:
+            use_sonar: bool = False, deep: bool = False) -> str:
         budget = self.budget if budget is None else _clamp_budget(budget)
         wait = self._not_ready()
         if wait:
             return self._charge("ask", wait)
+        if deep:
+            why = self.store.use_full()
+            if why:
+                return self._charge("ask", why)
         scorer = "dense" if (use_dense or use_sonar) else self.scorer   # use_sonar: older name
         if self.profile == "compact":
             return self._charge("ask", self.store.ask_compact(
@@ -314,7 +318,7 @@ def _register_full(mcp, t: Tools) -> None:
 
     @mcp.tool()
     def ask(question: str, budget: int = default_budget, use_dense: bool = False,
-            use_sonar: bool = False) -> str:
+            use_sonar: bool = False, deep: bool = False) -> str:
         """Start here for any question: graph facts, then a '--' line, then the source
         sentences that answer it, ranked. `budget` caps the reply in tokens (100-4000,
         40 % facts / 60 % sentences). Sentences are shortlisted by IDF and ordered by the
@@ -326,8 +330,10 @@ def _register_full(mcp, t: Tools) -> None:
         before answering. Once any of them names the specific fact asked, even briefly or
         in passing, state it — do not keep answering NOT FOUND once you have found it. If
         they only surface something related without naming that fact, answer NOT FOUND;
-        do not substitute a nearby or similar-sounding fact for the one actually asked."""
-        return t.ask(question, budget, use_dense, use_sonar)
+        do not substitute a nearby or similar-sounding fact for the one actually asked.
+        deep=True loads the graph model on the first use (slow once, then kept) and adds
+        facts and encoder ranking to documents indexed without it."""
+        return t.ask(question, budget, use_dense, use_sonar, deep)
 
     @mcp.tool()
     def ingest(path_or_text: str, source: str = "") -> str:
@@ -487,8 +493,16 @@ def main(argv=None) -> None:
     except ImportError as exc:
         _exit_missing_dependency(exc)
 
+    def full_factory():                        # lite sessions load it on `deep`, once
+        w = weights or resolve(ns.checkpoint, ns.vocab, download=ns.download,
+                               encoder=ns.encoder, pool=ns.pool)
+        ensure_spacy_model(download=ns.download)
+        return build_extractor(w, ns)
+
     factory = TextOnlyExtractor if ns.lite else (lambda: build_extractor(weights, ns))
-    store = GraphStore(extractor_factory=factory, path=ns.dir / "graph.json")
+    has_torch = importlib.util.find_spec("torch") is not None
+    store = GraphStore(extractor_factory=factory, path=ns.dir / "graph.json",
+                       full_factory=full_factory if ns.lite and has_torch else None)
     store.load()
     # Explicit legacy checkpoints resolve their own encoder inside the extractor, which
     # is built lazily: name it there rather than guessing the default here.

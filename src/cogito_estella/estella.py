@@ -4,6 +4,7 @@ A harness that wants the passages of its documents that answer a question, witho
 without a model download and in a few hundred tokens instead of the whole file."""
 from __future__ import annotations
 
+import importlib.util
 from argparse import Namespace
 from pathlib import Path
 
@@ -26,16 +27,28 @@ class Estella:
             from cogito_estella.mcp.weights import ensure_spacy_model, resolve
             weights = resolve(None, None)
             ensure_spacy_model()
-            factory = lambda: build_extractor(
-                weights, Namespace(device=None, encoder=None, download=True))
+            ns = Namespace(device=None, encoder=None, download=True)
+            factory = lambda: build_extractor(weights, ns)
+            full_factory = None
         else:
             factory = TextOnlyExtractor
+            full_factory = self._full_loader() if importlib.util.find_spec("torch") else None
         self.budget = budget
-        self.store = GraphStore(extractor_factory=factory,
+        self.store = GraphStore(extractor_factory=factory, full_factory=full_factory,
                                 path=Path(save_to) / "graph.json" if save_to else None)
         self.store.load()
         for p in paths:
             self.add(p)
+
+    @staticmethod
+    def _full_loader():
+        def load():
+            from cogito_estella.mcp.server import build_extractor
+            from cogito_estella.mcp.weights import ensure_spacy_model, resolve
+            weights = resolve(None, None)
+            ensure_spacy_model()
+            return build_extractor(weights, Namespace(device=None, encoder=None, download=True))
+        return load
 
     def add(self, path_or_text: str | Path, name: str = "") -> None:
         """Index a file, a directory, or raw text (named `name`)."""
@@ -46,8 +59,19 @@ class Estella:
         else:
             self.store.ingest_text(str(path_or_text), name or f"text{len(self.store.docs) + 1}")
 
-    def ask(self, question: str) -> str:
-        """The passages that answer `question`, one `[file § section] passage` per line."""
+    def deep(self) -> None:
+        """Load the graph model once and add facts and encoder ranking to what is indexed.
+        It stays loaded: later lite and deep calls cost the same. Raises RuntimeError when
+        the `[full]` extra is not installed."""
+        why = self.store.use_full()
+        if why:
+            raise RuntimeError(why)
+
+    def ask(self, question: str, deep: bool = False) -> str:
+        """The passages that answer `question`, one `[file § section] passage` per line.
+        `deep=True` first calls `deep()`."""
+        if deep:
+            self.deep()
         return self.store.ask_compact(question, self.budget, DEFAULT_SCORER,
                                       widen_to=min(2 * self.budget, ASK_BUDGET_MAX))
 

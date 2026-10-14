@@ -2,6 +2,15 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.19.1] - 2026-10-14
+
+### Added
+- **npm publishing from GitHub.** `.github/workflows/publish-npm.yml` publishes `npm/` when a release is published (or on demand), after checking that its version equals `pyproject.toml`'s; it reads the `NPM_TOKEN` repository secret and signs the package with provenance.
+
+### Changed
+- **`ask` pulls up the sentence after each of its two best hits.** An answer often sits in the next sentence, which opens with a pronoun and shares no word with the question ("This model will be referred to as smaLlama."). The successor is scored at 0.9 of its predecessor, inside the same budget. On the 250 questions over the five papers the answer reached the reply 208 times instead of 203 (6 gained, 1 lost; 99/125 to 102/125 and 104/125 to 106/125 on the two halves); on 200 HotpotQA questions that were not used to choose the rule, over 1,972 paragraphs (about 270k tokens), 140 instead of 135 (6 gained, 1 lost, p = 0.125). Tokens per reply unchanged (594).
+- **The splitter keeps a citation or abbreviation in one sentence** (`et al.`, `e.g.`, `i.e.`, `Fig.`, `Eq.`, `Tab.`, `Sec.`, `cf.`, `vs.`, `No.`): "...a small Llama [Touvron et al., 2023]..." was cut in two. On the five papers 206 instead of 203 answers reached the reply; on HotpotQA it changes nothing (no citations).
+
 ## [0.19.0] - 2026-10-14
 
 ### Added

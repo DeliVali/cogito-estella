@@ -42,6 +42,10 @@ ASK_MAX_IDS = 8                 # ids per fact line in `ask`: one hub group must
 DENSE_COS_FLOOR = 0.2           # below this cosine a sentence is not about the question
 DENSE_FLOOR = (DENSE_COS_FLOOR + 1.0) / 2.0        # the same floor on the scorer's [0, 1] scale
 DENSE_OFFSET = 1.0              # embedded rows rank above lexical ones: no shared origin
+NEIGHBOR_TOP = 2                # best sentences whose successor is pulled up with them
+NEIGHBOR_WEIGHT = 0.9           # successor score as a share of its predecessor's
+# a sentence ending here is cut mid-sentence: the splitter joins it to the next one
+_ABBREV_END = re.compile(r"(?:\bet al|\be\.g|\bi\.e|\bFig|\bTab|\bEq|\bvs|\bcf|\bSec|\bNo)\.[\],)]*$")
 LOW_CONFIDENCE = 0.3            # learned p= under which the reply probably misses the answer
 ASK_STYLES = ("full", "compact")
 # compact replies speak plain language at the point of use: a small model follows a line
@@ -232,6 +236,21 @@ class _AskSnapshot:
         return si / max(self.doc_sents.get(src, 1) - 1, 1)
 
 
+def _pull_up_successors(scores, keys):
+    """The sentence after each of the best ones scores just below it: an answer often sits in
+    the next sentence, which opens with a pronoun and shares no word with the question."""
+    top = sorted(range(len(scores)), key=lambda i: -scores[i])[:NEIGHBOR_TOP]
+    where = {k: i for i, k in enumerate(keys)}
+    out = list(scores)
+    for i in top:
+        if scores[i] <= 0:
+            break
+        j = where.get((keys[i][0], keys[i][1] + 1))
+        if j is not None:
+            out[j] = max(out[j], NEIGHBOR_WEIGHT * scores[i])
+    return out
+
+
 class GraphStore:
     def __init__(self, extractor=None, extractor_factory=None, path: Path | None = None,
                  full_factory=None):
@@ -341,7 +360,10 @@ class GraphStore:
                 continue
             i = text.find(s, cursor)
             i = cursor if i < 0 else i
-            out.append((s, i))
+            if out and _ABBREV_END.search(out[-1][0]):
+                out[-1] = (text[out[-1][1]:i + len(s)].strip(), out[-1][1])
+            else:
+                out.append((s, i))
             cursor = i + len(s)
         return out
 
@@ -678,6 +700,7 @@ class GraphStore:
             self._drop_foreign_embeddings(self.extractor)
         lex, snap, edges = self._ask_snapshot(question, dense=requested != "lexical")
         scores, name, conf = self._score_sentences(question, lex, snap, requested, budget)
+        scores = _pull_up_successors(scores, snap.keys)
         if not snap.ents and not any(s > 0 for s in scores):
             return (COMPACT_NONE if style == "compact" else f"no material for '{question}'"), None
         if style == "compact":

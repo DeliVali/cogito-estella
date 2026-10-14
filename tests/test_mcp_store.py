@@ -8,7 +8,7 @@ import threading
 import numpy as np
 import pytest
 
-from cogito_estella.mcp.store import DIVIDER, GraphStore
+from cogito_estella.mcp.store import DIVIDER, GraphStore, TextOnlyExtractor
 from cogito_estella.mcp.tokens import ntok
 
 DOC = ("The generated concepts are decoded by SONAR. "
@@ -240,7 +240,26 @@ def test_ask_layout_is_header_facts_divider_then_sentences(ask_store):
     assert lines[4] == "--"
     assert lines[5] == 't s0: "The encoder maps text to a vector."'
     assert all(x.startswith("t s") for x in lines[5:])
-    assert not any("committee" in x for x in lines[5:])   # zero lexical overlap, not served
+    assert "committee" in lines[-1]              # zero overlap: served only as a hit's successor
+
+
+def test_ask_serves_a_zero_overlap_sentence_only_next_to_a_hit(fake_extractor):
+    doc = ("The encoder maps text to a vector. The decoder maps text to a vector. "
+           "Because the budget grew, the committee met early. The garden was quiet. "
+           "Rain fell on the roof.")
+    st = GraphStore(extractor=fake_extractor(ASK_TRIPLES))
+    st.ingest_text(doc, "t")
+    reply = st.ask(Q)
+    assert "committee" in reply                  # follows the second hit
+    assert "garden" not in reply and "Rain" not in reply
+
+
+def test_split_keeps_a_citation_in_one_sentence():
+    st = GraphStore(extractor=TextOnlyExtractor())
+    sents = [t for t, _ in st.split("We trained a small Llama [Touvron et al., 2023] on it. "
+                                    "See Fig. 3 for details. It worked.")]
+    assert sents == ["We trained a small Llama [Touvron et al., 2023] on it.",
+                     "See Fig. 3 for details.", "It worked."]
 
 
 def test_ask_orders_entities_by_ascending_degree(ask_store):

@@ -785,10 +785,11 @@ def test_ask_learned_reorders_the_sentence_block(learned_store, weighted):
 
 
 def test_ask_learned_ranks_only_the_lexical_candidates(learned_store, weighted):
-    """A sentence with no overlap and no retrieved fact never reaches the model, so no weight
-    can pull it into the reply."""
+    """A sentence with no overlap and no retrieved fact never reaches the model: no weight can
+    rank it above the best candidate. It can follow a hit, as a successor, and nothing more."""
     weighted(only("rel_pos"))
-    assert "committee" not in learned_store().ask(LEARNED_Q, scorer="learned")
+    lines = sentence_lines(learned_store().ask(LEARNED_Q, scorer="learned"))
+    assert "committee" not in lines[0]
 
 
 def test_ask_learned_keeps_the_layout_and_the_budget(learned_store, weighted):

@@ -1,4 +1,4 @@
-# Cogito Estella (v0.17.0)
+# Cogito Estella (v0.18.0)
 
 Knowledge-graph memory for agents. A local model turns documents into `subject relation
 object` facts in one non-autoregressive pass (no LLM tokens), and the `cogito-mcp` server

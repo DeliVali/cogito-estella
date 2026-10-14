@@ -2,7 +2,7 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
-## [Unreleased]
+## [0.18.0] - 2026-10-14
 
 ### Added
 - **`--lite`: a cold session without the graph model.** Sentences are indexed with spaCy alone (`TextOnlyExtractor`); no encoder or decoder head is loaded or downloaded, and `ask` keeps its learned ranking. Cold session on CPU (fresh index, first answer, compact replies): over this repository's README (2.1k tokens) 3.8 s and 624 MB against 29.3 s and 2.6 GB, with the exact answer in the reply for 9 of 10 questions against 8; over README + CHANGELOG (9.4k) 4.3 s against 67.6 s, 21 of 22 against 20. On 8 SQuAD v1.1 articles (1,140 human-written questions, one fresh session each) the full server keeps a small, significant edge: 96.8 % against 96.2 % of answers in the reply (McNemar p = 0.016), for 15× the indexing time (479 s against 31 s) and 4× the memory. Documents indexed this way are marked and re-extracted by the next full ingest instead of reading as `unchanged`.

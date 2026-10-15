@@ -7,7 +7,8 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Hugging Face](https://img.shields.io/badge/weights-Hugging%20Face-yellow)](https://huggingface.co/DeliVali/cogito-estella)
 
-![input tokens](https://img.shields.io/badge/input%20tokens%20vs%20Read%2FGrep-6.2%C3%97%20fewer%20on%20docs%2C%202.2%C3%97%20on%20code-orange)
+![cost](https://img.shields.io/badge/cost%20vs%20Read%2FGrep-3.7%C3%97%20lower%20%28Opus%2C%20long%20sessions%29-orange)
+![accuracy](https://img.shields.io/badge/accuracy-39%2F40%20vs%2024%2F40-brightgreen)
 ![MCP](https://img.shields.io/badge/MCP-16%20clients-blue)
 ![lite](https://img.shields.io/badge/default%20index-no%20model%2C%20no%20torch-teal)
 ![code graph](https://img.shields.io/badge/code%20graph-tree--sitter-purple)
@@ -17,9 +18,9 @@ Your agent reads a few hundred tokens instead of whole files. Point Estella at a
 of documents or code; for every question it returns only the lines that answer it, each
 tagged with its file and section. Indexing spends no LLM tokens.
 
-On 30 questions over five research papers, Claude Code (Haiku) answered 29 with Estella
-and 29 with its own `Read`/`Grep`, reading 2.6k input tokens per question instead of
-16.4k ([measured](#measured)).
+In long Claude Code sessions over a mixed project (code, PDF, Word, Excel, PowerPoint),
+Opus answered 39 of 40 questions with Estella and 24 with its own `Read`/`Grep`, for
+$4.97 instead of $18.34 ([measured](#measured)).
 
 ## Quick start
 
@@ -59,8 +60,10 @@ docs.context("When did the embargo end?")     # the question with its lines, for
 
 The HTTP server has no authentication: keep it on localhost or behind your own proxy.
 
-**Tool or prompt?** A model that calls tools well gets the MCP server and calls `ask`
-when it needs the documents. Many small models never call a tool; send them
+**Which tools to give the agent?** For reading a project, `ask` alone measured best: with
+the agent's own file tools added next to it, accuracy stayed the same and tokens rose
+14 to 28 %, and a small local model lost a quarter of its answers to reading whole files.
+Keep the file tools for editing. Many small models never call a tool at all; send them
 `docs.context(question)` as the user message, or use the server's `context` prompt.
 
 ## What it reads
@@ -127,7 +130,7 @@ On first run the full server downloads its weights from
 ## Tools
 
 - `ask(question)`: start here. The lines that answer the question within a token budget
-  (600 by default), best first. When the scorer doubts its best line the reply says so
+  (300 by default), best first. When the scorer doubts its best line the reply says so
   and widens itself once; a corpus that fits the budget is returned whole. For questions
   that chain two facts it searches a second time with the names its best lines bring in.
 - `ingest(path_or_text)`: a file, a folder or raw text. Unchanged files are skipped.
@@ -142,33 +145,41 @@ Server flags: `--full`, `--profile compact|full`, `--ingest PATH`, `--budget`, `
 
 ## Measured
 
-Claude Code (Haiku) as the agent, the `ask` tool only, answers judged against a reference.
-Each set is 30 questions unless noted; the code set is four libraries Estella was never
-tuned on (httpx, starlette, h11, anyio).
+**Long sessions.** One continuous Claude Code conversation per session, three sessions of
+13 or 14 questions, 40 in all, over a project of 110 code files (httpx, starlette, h11,
+anyio) plus a PDF paper, a Word paper, an Excel sheet and a PowerPoint deck. Questions
+cover code lookups, flows across files, documents, tables and slides; answers are judged
+against a reference. Tokens are all input tokens of the 40 questions, cache included.
+
+| Agent | Own `Read`/`Grep` only | Estella `ask` only (default budget, 300) |
+| :--- | :--- | :--- |
+| Opus | 24/40 · 3.24M tokens · $18.34 | **39/40 · 0.99M tokens · $4.97** |
+| Haiku | 24/40 · 2.22M tokens · $0.40 | **36/40 · 0.91M tokens · $0.15** |
+| Qwen3.5 4B, local | 1/18 (stopped) · 364k tokens per question | **29/40** · 29k per question (budget 600) |
+
+Without Estella, Claude Code could not read the Excel sheet or the slides and read the long
+documents only in part; code questions were answered either way. At a 600-token budget
+Opus also answered 39/40 for $6.44 and Haiku 37/40 for $0.18; the default is 300 because
+it cost 20 to 23 % less for at most one answer.
+
+An agent whose shell opens any format with a script answers these questions on its own;
+there `ask` adds its replies to the context and saves no tokens. Estella pays where the
+agent cannot read a format, or where reading whole files would fill its context.
+
+**One question per session.** Haiku, `ask` only, 30 questions per set unless noted; the
+code set is four libraries Estella was never tuned on.
 
 | Case | Lite | Full |
 | :--- | :--- | :--- |
 | Research papers (5 papers, 56k tokens) | 29/30 | 29/30 |
 | Unseen code (110 files) | 29/30 | 28/30 |
 | Code of this repository (40 questions) | 37/40 | 37/40 |
-| Wikipedia, two-step questions (HotpotQA, 2,000 paragraphs, 60 questions) | 50/60 | 51/60 |
+| Wikipedia, two-step questions (HotpotQA, 60 questions) | 50/60 | 51/60 |
 
-On the Wikipedia questions the same agent with every relevant paragraph pasted into the
-prompt answers 53/60: HotpotQA carries some wrong reference answers, so that is the
-ceiling here, and Estella sits one to three questions under it.
-
-Tokens, same papers and questions (30 per branch, input tokens per question after
-removing the agent's fixed system prompt):
-
-| Branch | Correct | Input tokens | Cost of 30 |
-| :--- | :--- | :--- | :--- |
-| Whole paper in the prompt | 30/30 | 17,908 | $0.129 |
-| The agent's own `Read`/`Grep` | 29/30 | 16,405 | $0.059 |
-| Estella `ask` | 29/30 | 2,631 | $0.030 |
-
-On the 30 unseen-code questions the agent's own `Read`/`Grep` also answered 29: it read
-8,413 input tokens per question, Estella 3,905 (2.2× fewer). Code is cheaper to grep than
-prose, since one identifier finds its line, so the saving there is smaller.
+With every relevant Wikipedia paragraph pasted into the prompt the same agent answers
+53/60: HotpotQA carries some wrong reference answers, so that is the ceiling there. On the
+papers Estella read 2.6k input tokens per question against 16.4k for `Read`/`Grep`; on the
+unseen code, 3.9k against 8.4k (one identifier finds its line, so `grep` is cheap there).
 
 Small local models: on 8 Wikipedia articles and 48 questions per model (Qwen2.5 1.5B and
 3B, CPU), sending `context` instead of the whole article kept accuracy within noise

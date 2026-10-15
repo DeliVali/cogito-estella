@@ -176,3 +176,36 @@ def test_an_old_antigravity_install_keeps_its_file(tmp_path):
     old.write_text("{}")
     agy = next(c for c in CLIENTS if c.key == "antigravity")
     assert agy.path(home, tmp_path) == old
+
+
+@pytest.mark.parametrize("key,where,section", [
+    ("cline", ("home/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/"
+               "cline_mcp_settings.json"), "mcpServers"),
+    ("roo", "proj/.roo/mcp.json", "mcpServers"),
+    ("zed", "home/.config/zed/settings.json", "context_servers"),
+    ("copilot-cli", "home/.copilot/mcp-config.json", "mcpServers"),
+    ("qwen", "proj/.qwen/settings.json", "mcpServers"),
+    ("amazon-q", "home/.aws/amazonq/mcp.json", "mcpServers"),
+])
+def test_more_clients_get_an_entry_in_their_own_file(tmp_path, monkeypatch, key, where, section):
+    from cogito_estella.setup import run
+    monkeypatch.setattr(sys, "platform", "linux")
+    home, proj = tmp_path / "home", tmp_path / "proj"
+    (proj / "docs").mkdir(parents=True)
+    home.mkdir()
+    assert run(["--clients", key, "--yes"], home=home, project=proj, out=lambda *a: None) == 0
+    entry = json.loads((tmp_path / where).read_text())[section]["cogito-estella"]
+    assert entry["args"][-2] == "--dir"
+    if key == "copilot-cli":
+        assert entry["type"] == "local" and entry["tools"] == ["*"]
+
+
+def test_zed_settings_with_comments_are_left_alone(tmp_path):
+    from cogito_estella.setup import run
+    home, proj = tmp_path / "home", tmp_path / "proj"
+    (proj / "docs").mkdir(parents=True)
+    cfg = home / ".config/zed/settings.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('// my settings\n{"theme": "One Dark"}\n')
+    assert run(["--clients", "zed", "--yes"], home=home, project=proj, out=lambda *a: None) == 1
+    assert cfg.read_text().startswith("// my settings")

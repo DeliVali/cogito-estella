@@ -109,7 +109,23 @@ def server_command(docs: list[Path], project: Path) -> tuple[str, list[str]]:
     return found, args
 
 
+READ_ONLY_TOOLS = ["ask", "query", "provenance", "search", "entities", "stats"]
+# per-client key that skips the confirmation prompt: read-only tools by name where the client
+# lists them; Gemini CLI and Qwen Code only trust a whole server (its one write is `ingest`)
+AUTO_APPROVE = {"kiro": ("autoApprove", READ_ONLY_TOOLS), "cline": ("alwaysAllow", READ_ONLY_TOOLS),
+                "roo": ("alwaysAllow", READ_ONLY_TOOLS), "gemini": ("trust", True),
+                "qwen": ("trust", True)}
+
+
 def entry_for(client: Client, command: str, args: list[str]) -> dict:
+    entry = _entry(client, command, args)
+    key, value = AUTO_APPROVE.get(client.key, (None, None))
+    if key:
+        entry[key] = value
+    return entry
+
+
+def _entry(client: Client, command: str, args: list[str]) -> dict:
     if client.kind == "servers":                           # VS Code
         return {"type": "stdio", "command": command, "args": args}
     if client.style == "copilot":                          # Copilot CLI: "local", tool list

@@ -1,4 +1,4 @@
-# Cogito Estella (v0.20.0)
+# Cogito Estella (v0.20.1)
 
 [![CI](https://github.com/DeliVali/cogito-estella/actions/workflows/ci.yml/badge.svg)](https://github.com/DeliVali/cogito-estella/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/cogito-estella)](https://pypi.org/project/cogito-estella/)
@@ -97,17 +97,21 @@ the reply:
 | :--- | ---: | ---: |
 | English → English | 95.2 % | 97.8 % |
 | Spanish → Spanish | 92.0 % | 95.5 % |
-| Arabic → Arabic | 71.9 % | 82.2 % |
-| Chinese → Chinese | 76.8 % | 78.7 % |
+| Arabic → Arabic | 71.9 % | 82.1 % |
+| Chinese → Chinese | 76.8 % | 79.2 % |
 | Thai → Thai | 62.9 % | 63.4 % |
-| Spanish → English | 43 % | 95.7 % |
-| Chinese → English | 14 % | 87.8 % |
-| English → Chinese | 15 % | 65.0 % |
+| Spanish → English | 43 % | 96.6 % |
+| Chinese → English | 14 % | 95.1 % |
+| English → Chinese | 15 % | 84.5 % |
 
 The two rankings take turns in the reply, and the vectors rank alone when few of the
-question's words occur in the documents. They cost indexing time (about 1,300 tokens a
-second on 4 CPU cores, ten times the words-only index) and nothing per question beyond
-~60 ms. Offline, or without the model, the index serves words only and says so on stderr;
+question's words occur in the documents. The reply's confidence (`p=`, and the "Low
+confidence" line) stays the words' own: when the words find nothing the vectors still
+bring the passages on the topic, but the reply stays under the low mark, since a passage
+on the topic is not an answer (an unanswerable question about a page's own topic scores
+as high as an answered one). Such replies widen to 600 tokens, which is why a question in
+another language costs 350-540 tokens. Vectors cost indexing time (about 3,400 English
+tokens a second on 4 CPU cores) and 25-80 ms per question. Offline, or without the model, the index serves words only and says so on stderr;
 `--no-vectors`, `Estella(..., vectors=False)` or `COGITO_VECTORS=0` turn them off. The
 graph model of the full server is English-only.
 
@@ -120,7 +124,7 @@ turns documents into a knowledge graph.
 | :--- | :--- | :--- |
 | Finding the answer for `ask` | IDF shortlist and a small learned re-ranker, in turns with multilingual sentence vectors | IDF shortlist and the learned re-ranker, with the encoder similarity as one of its features |
 | Knowledge graph | none | prose: facts extracted by the model; code: definitions, calls, imports, inheritance by syntax |
-| Start-up | about a second; indexing ~1,300 tokens/s | loads a 1.9 GB encoder (GPU optional) |
+| Start-up | about a second; indexing ~3,400 tokens/s | loads a 1.9 GB encoder (GPU optional) |
 | Tools | `ask`, `context` | also `query`, `provenance`, `search`, `entities`, Neo4j export |
 
 Both modes start from a lexical shortlist ordered by a 12-feature learned scorer. The large

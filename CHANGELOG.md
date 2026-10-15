@@ -2,6 +2,12 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.20.1] - 2026-10-15
+
+### Fixed
+- **Replies ranked by vectors carry a confidence again.** With vectors on, a question whose words found nothing was answered by the vectors alone with no `p=` and no "Low confidence" line, so a caller that escalates on low confidence (Cogito's recall ladder) took nearby passages as an answer. The confidence is now the words' own `p`, as without vectors; when the words find nothing the reply keeps the vector passages but stays under the low mark (the vector model's calibrated p, capped at 0.29), and no material when no passage is alike at all. A passage on the topic is not an answer: on a privacy page, "default port of the metrics server?" (not there) scored cosine 0.85 against the page. Low replies widen to 600 tokens, so questions in another language find more: XQuAD Spanish over English 95.7 % → 96.6 %, Chinese over English 87.8 → 95.1, English over Chinese 65.0 → 84.5, at 350-540 tokens a reply; same language unchanged (English 97.8, Spanish 95.5, Arabic 82.1, Chinese 79.2, Thai 63.4).
+- Indexing with vectors runs at about 3,400 English tokens/s on 4 cores; the 1,300 given in 0.20.0 was measured beside another job.
+
 ## [0.20.0] - 2026-10-15
 
 ### Added

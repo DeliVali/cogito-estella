@@ -237,6 +237,13 @@ class _AskSnapshot:
         return si / max(self.doc_sents.get(src, 1) - 1, 1)
 
 
+def _code_terms(line: str, path: str) -> str:
+    """What a code line is searched by: its text, its identifiers split at camelCase and
+    snake_case boundaries (`timeoutSeconds` -> timeout seconds) and its file path words."""
+    parts = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", line)
+    return f"{line} {re.sub(r'[^A-Za-z0-9]+', ' ', parts)} {re.sub(r'[^A-Za-z0-9]+', ' ', path)}"
+
+
 def _pull_up_successors(scores, keys):
     """The sentence after each of the best ones scores just below it: an answer often sits in
     the next sentence, which opens with a pronoun and shares no word with the question."""
@@ -535,9 +542,8 @@ class GraphStore:
                 texts, keys, _ = self.sentence_index()
                 # a code line rarely names its file ("which port does the Dockerfile expose?"):
                 # its path words count as its own for matching, never for display
-                self._lex = LexicalScorer([
-                    t if is_prose(k[0]) else f"{t} {re.sub(r'[^A-Za-z0-9]+', ' ', k[0])}"
-                    for t, k in zip(texts, keys)])
+                self._lex = LexicalScorer([t if is_prose(k[0]) else _code_terms(t, k[0])
+                                           for t, k in zip(texts, keys)])
             return self._lex
 
     def sentence_index(self) -> tuple[list, list, dict]:

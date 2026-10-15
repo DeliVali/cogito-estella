@@ -246,3 +246,16 @@ def test_legacy_and_broken_office_files_report_an_error(tmp_path):
     got = dict(iter_sources(tmp_path))
     assert "save it as .docx" in str(got["old.doc"])
     assert "cannot read bad.docx" in str(got["bad.docx"])
+
+
+def test_mobile_build_files_without_extension_are_code():
+    from cogito_estella.mcp.readers import is_prose
+    assert not any(is_prose(n) for n in ("ios/Podfile", "fastlane/Fastfile", "BUILD", "Pipfile"))
+
+
+def test_camel_case_identifiers_match_their_words():
+    from cogito_estella.mcp.store import GraphStore, TextOnlyExtractor
+    st = GraphStore(extractor=TextOnlyExtractor())
+    st.ingest_text("@property int timeoutSeconds; // 45\n@end\n", "Legacy.h")
+    st.ingest_text("The weather was mild in spring.", "notes")
+    assert "timeoutSeconds" in st.ask_compact("What is the timeout in seconds?", 100, "lexical")

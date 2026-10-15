@@ -24,7 +24,9 @@ MAX_MEMBER = 50_000_000         # bytes read from one member of an office archiv
 
 
 CODE_NAMES = ("dockerfile", "containerfile", "makefile", "jenkinsfile", "procfile", "gemfile",
-              "vagrantfile", "justfile")
+              "vagrantfile", "justfile", "podfile", "fastfile", "appfile", "matchfile",
+              "cartfile", "brewfile", "rakefile", "pipfile", "caddyfile", "tiltfile", "earthfile",
+              "dangerfile", "guardfile", "berksfile", "build", "workspace", "codeowners")
 
 
 def is_prose(name: str) -> bool:

@@ -209,3 +209,26 @@ def test_zed_settings_with_comments_are_left_alone(tmp_path):
     cfg.write_text('// my settings\n{"theme": "One Dark"}\n')
     assert run(["--clients", "zed", "--yes"], home=home, project=proj, out=lambda *a: None) == 1
     assert cfg.read_text().startswith("// my settings")
+
+
+@pytest.mark.parametrize("key,where,field,value", [
+    ("kiro", "proj/.kiro/settings/mcp.json", "autoApprove", "list"),
+    ("cline", ("home/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/"
+               "cline_mcp_settings.json"), "alwaysAllow", "list"),
+    ("roo", "proj/.roo/mcp.json", "alwaysAllow", "list"),
+    ("qwen", "proj/.qwen/settings.json", "trust", True),
+    ("gemini", "proj/.gemini/settings.json", "trust", True),
+])
+def test_read_only_tools_are_approved_where_the_client_allows_it(tmp_path, monkeypatch, key,
+                                                                  where, field, value):
+    from cogito_estella.setup import READ_ONLY_TOOLS, run
+    monkeypatch.setattr(sys, "platform", "linux")
+    home, proj = tmp_path / "home", tmp_path / "proj"
+    (proj / "docs").mkdir(parents=True)
+    home.mkdir()
+    run(["--clients", key, "--yes"], home=home, project=proj, out=lambda *a: None)
+    entry = json.loads((tmp_path / where).read_text())["mcpServers"]["cogito-estella"]
+    if value == "list":
+        assert entry[field] == READ_ONLY_TOOLS and "ingest" not in entry[field]
+    else:
+        assert entry[field] is value

@@ -51,6 +51,7 @@ _CAPS = re.compile(r"\b[A-Z][\w'\-]*(?:\s+(?:of|the|de|and|&)?\s*[A-Z][\w'\-]*)*
 CODE_NEIGHBORS = 2              # lines after a code hit pulled up with it
 # a sentence ending here is cut mid-sentence: the splitter joins it to the next one
 _ABBREV_END = re.compile(r"(?:\bet al|\be\.g|\bi\.e|\bFig|\bTab|\bEq|\bvs|\bcf|\bSec|\bNo)\.[\],)]*$")
+VECTORS_ALONE_MAX = 0.29       # a reply the words did not find is never above LOW_CONFIDENCE
 VECTOR_ONLY_BELOW = 0.5        # share of question words in the corpus under which vectors rank alone
 LOW_CONFIDENCE = 0.3            # learned p= under which the reply probably misses the answer
 ASK_STYLES = ("full", "compact")
@@ -948,16 +949,24 @@ class GraphStore:
         return out, f"dense{snap.cover}", None
 
     def _interleaved(self, question, lex, lexical, snap, budget):
-        """`--multilingual`: the learned lexical order and the vector order taken in turns,
-        or the vector order alone when few question words occur in the corpus (another
-        language). XQuAD, against either ranking alone: Thai 63.4 % (vectors 52.4, lexical
+        """Vectors on: the learned lexical order and the vector order taken in turns, or the
+        vector order alone when few question words occur in the corpus. The confidence is
+        the words' own p, as without vectors. When the words find nothing the reply is the
+        vectors' alone and stays under LOW_CONFIDENCE: they find passages on the topic, not
+        whether the answer is in them (an unanswerable question about the page's own topic
+        scored cosine 0.85). XQuAD, against either ranking alone: Thai 63.4 % (vectors 52.4, lexical
         62.9), Arabic 82.2 (81.7, 71.9); Spanish over English text 95.7 (lexical 43)."""
         dense, _, _ = self._score_sentences(question, lex, snap, "dense", budget)
+        plain = replace(snap, mat=None, mask=None)    # the scorer was fitted
+        learned, conf = self._learned_scores(question, lex, lexical, plain, budget)  # without e5
         q = set(tokenize(question))
         if sum(t in lex.df for t in q) < VECTOR_ONLY_BELOW * max(1, len(q)):
-            return dense, "vectors", None
-        plain = replace(snap, mat=None, mask=None)    # the scorer was fitted
-        learned, _ = self._learned_scores(question, lex, lexical, plain, budget)  # without e5
+            if learned is None:                   # the words found nothing: the vectors find
+                best = max(dense, default=0.0) - DENSE_OFFSET     # the topic, never whether
+                judge = getattr(self.extractor, "confidence", None)  # the answer is there
+                p = judge(2 * best - 1) if best >= 0 and judge else 0.0
+                conf = min(p, VECTORS_ALONE_MAX)
+            return dense, "vectors", conf
         if learned is None:
             learned = lexical
         n = len(dense)
@@ -967,7 +976,7 @@ class GraphStore:
         for i in range(n):
             a = by_learned[i] if learned[i] > 0 else n
             out.append(1.0 / (1 + min(a, by_dense[i])) + 1e-6 / (1 + max(a, by_dense[i])))
-        return out, "interleaved", None
+        return out, "interleaved", conf
 
     def _encode_question(self, question, width=None):
         """The question as a flat row, or None when no encoder answers for it or its width
@@ -1337,3 +1346,4 @@ class GraphStore:
         except (OSError, ValueError, KeyError, EOFError, IndexError) as exc:
             print(f"cogito-mcp: embeddings sidecar unusable ({exc}); ask ranks lexically",
                   file=sys.stderr)
+

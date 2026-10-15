@@ -9,6 +9,7 @@ over English 14 % -> 88 %, English over Chinese 15 % -> 65 %; same language Engl
 62.9 -> 63.4 (p = 0.69)."""
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import tempfile
@@ -90,6 +91,14 @@ class VectorExtractor(TextOnlyExtractor):
             v = (h * m).sum(1) / m.sum(1)                 # mean pooling, as e5 was trained
             out.append(v / np.linalg.norm(v, axis=1, keepdims=True))
         return np.concatenate(out) if out else np.zeros((0, DIM), dtype=np.float32)
+
+    @staticmethod
+    def confidence(cos: float) -> float:
+        """How likely the best passage is on the question's topic, from its cosine: a logistic
+        fit on XQuAD across languages, questions of other articles as the off-topic ones
+        (p = 0.3 at cosine 0.764). On-topic is not answered: the store caps it under
+        LOW_CONFIDENCE."""
+        return 1.0 / (1.0 + math.exp(-(68.7 * (cos - 0.8) + 1.60)))
 
     def encode_batch(self, texts):
         return self._encode(list(texts), "passage: ")

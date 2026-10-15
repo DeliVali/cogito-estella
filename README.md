@@ -144,10 +144,11 @@ tuned on (httpx, starlette, h11, anyio).
 | Research papers (5 papers, 56k tokens) | 29/30 | 29/30 |
 | Unseen code (110 files) | 29/30 | 28/30 |
 | Code of this repository (40 questions) | 37/40 | 37/40 |
-| Wikipedia, two-step questions (2,000 paragraphs) | 26/30 | 26/30 |
+| Wikipedia, two-step questions (HotpotQA, 2,000 paragraphs, 60 questions) | 50/60 | 51/60 |
 
-The Wikipedia row predates the second search in `ask`, which raised the share of
-answers that reach the reply from 136 to 149 of 200 questions not used to design it.
+On the Wikipedia questions the same agent with every relevant paragraph pasted into the
+prompt answers 53/60: HotpotQA carries some wrong reference answers, so that is the
+ceiling here, and Estella sits one to three questions under it.
 
 Tokens, same papers and questions (30 per branch, input tokens per question after
 removing the agent's fixed system prompt):

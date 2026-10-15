@@ -41,6 +41,9 @@ INDEX_WAIT = 60.0                 # seconds a tool waits for the startup indexin
 COMPACT_ERRORS = 5                # error lines a compact ingest reply keeps
 
 ASK_BUDGET_MIN, ASK_BUDGET_MAX = 100, 4000
+# 300, not 600: in long agent sessions Opus kept 39/40 at 23 % lower cost and Haiku 36/40
+# against 37/40 at 20 % lower; a doubtful reply still widens itself to twice the budget
+DEFAULT_BUDGET = 300
 DEFAULT_SCORER = "learned"        # what `ask` ranks with when the operator sets nothing
 SCORER_ENV = "COGITO_ASK_SCORER"
 
@@ -101,7 +104,7 @@ def corpus_label(names) -> str:
 class Tools:
     """Tool bodies bound to one store; plain callables so they can be unit-tested."""
 
-    def __init__(self, store: GraphStore, profile: str = "full", budget: int = 600):
+    def __init__(self, store: GraphStore, profile: str = "full", budget: int = DEFAULT_BUDGET):
         if profile not in PROFILES:
             raise ValueError(f"unknown profile {profile!r}; use one of: {', '.join(PROFILES)}")
         self.store = store
@@ -284,7 +287,7 @@ def parse_bind(spec: str) -> tuple[str, int]:
 
 
 def register_rest(mcp, t: Tools) -> None:
-    """`POST /ask` and `POST /context` with `{"question": "...", "budget": 600}`, text out:
+    """`POST /ask` and `POST /context` with `{"question": "...", "budget": 300}`, text out:
     the same replies as the tools, for a harness that only speaks HTTP."""
     import anyio
     from starlette.responses import JSONResponse, PlainTextResponse
@@ -455,9 +458,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                          "a process: MCP at /mcp, plus POST /ask and /context with "
                          '{"question": "..."} (HOST defaults to 127.0.0.1; there is no '
                          "authentication, so keep it on localhost or behind your own proxy)")
-    ap.add_argument("--budget", type=int, default=600,
+    ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
                     help=f"token budget of one `ask` reply ({ASK_BUDGET_MIN}-{ASK_BUDGET_MAX}; "
-                         "default 600)")
+                         f"default {DEFAULT_BUDGET})")
     ns = ap.parse_args(argv)
     if ns.paths:                     # one positional path is the whole setup
         ns.ingest = [*(ns.ingest or []), *ns.paths]

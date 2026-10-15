@@ -5,6 +5,7 @@ Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemV
 ## [Unreleased]
 
 ### Changed
+- **`ask` returns 300 tokens by default instead of 600** (`--budget`, `Estella(budget=)`); a doubtful reply still widens itself to 600. Long Claude Code sessions, 40 questions over code, PDF, Word, Excel and PowerPoint: Opus 39/40 at both budgets, $6.44 → $4.97; Haiku 37/40 → 36/40, $0.18 → $0.15. With the agent's own `Read`/`Grep` instead: 24/40 for both, $18.34 and $0.40. Tried and dropped: trimming replies by the scorer's confidence (even at `p ≥ 0.9` it cut the answer line in 15 to 25 % of cases) and not resending lines already sent in a session (11 % of reply tokens).
 - **Code lines in a compact reply are grouped under their file**, once, in file order. The repeated `[file]` tag was 40 % of a code reply; the room it frees holds more lines. Unseen code (30 questions): answers in the reply 19 instead of 18 at 600 tokens, 14 instead of 11 at 250; this repository's code reaches at 400 tokens what it reached at 600. With the agent: 29/30 either way, 3,905 input tokens per question instead of 4,310, against 8,413 for the agent's own `Read`/`Grep`.
 
 ## [0.19.3] - 2026-10-15

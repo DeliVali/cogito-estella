@@ -91,7 +91,7 @@ def test_ask_clamps_the_budget(tools, monkeypatch):
     tools.ask("q", budget=1)
     tools.ask("q", budget=99_999)
     tools.ask("q")
-    assert seen == [100, 4000, 600]
+    assert seen == [100, 4000, 300]
 
 
 def test_ask_use_sonar_without_embeddings_falls_back_with_a_note(tools):
@@ -482,7 +482,7 @@ def test_compact_ask_ranks_sentences_without_graph_jargon(compact):
     assert ntok(out) <= 1200 and compact.store.ledger.calls["ask"] == 1
 
 
-@pytest.mark.parametrize("conf, budgets", [(0.1, [600, 1200]), (0.9, [600]), (None, [600])])
+@pytest.mark.parametrize("conf, budgets", [(0.1, [300, 600]), (0.9, [300]), (None, [300])])
 def test_compact_ask_widens_once_in_the_same_call_when_the_scorer_doubts(compact, monkeypatch,
                                                                          conf, budgets):
     seen = []
@@ -550,7 +550,7 @@ def test_the_operator_budget_is_the_default_of_the_full_ask(fake_extractor):
 
 def test_parse_args_reads_the_small_model_flags():
     ns = parse_args([])
-    assert ns.profile == "full" and ns.ingest is None and ns.budget == 600
+    assert ns.profile == "full" and ns.ingest is None and ns.budget == 300
     ns = parse_args(["--profile", "compact", "--ingest", "docs", "--ingest", "README.md",
                      "--budget", "400"])
     assert ns.profile == "compact" and ns.ingest == [Path("docs"), Path("README.md")]

@@ -45,6 +45,7 @@ DENSE_FLOOR = (DENSE_COS_FLOOR + 1.0) / 2.0        # the same floor on the score
 DENSE_OFFSET = 1.0              # embedded rows rank above lexical ones: no shared origin
 NEIGHBOR_TOP = 2                # best sentences whose successor is pulled up with them
 NEIGHBOR_WEIGHT = 0.9           # successor score as a share of its predecessor's
+CODE_NEIGHBORS = 2              # lines after a code hit pulled up with it
 # a sentence ending here is cut mid-sentence: the splitter joins it to the next one
 _ABBREV_END = re.compile(r"(?:\bet al|\be\.g|\bi\.e|\bFig|\bTab|\bEq|\bvs|\bcf|\bSec|\bNo)\.[\],)]*$")
 LOW_CONFIDENCE = 0.3            # learned p= under which the reply probably misses the answer
@@ -237,6 +238,32 @@ class _AskSnapshot:
         return si / max(self.doc_sents.get(src, 1) - 1, 1)
 
 
+def _code_graph(text: str, source: str, offsets: list[int], n: int) -> list[list[dict]]:
+    """Syntax edges of a code file grouped by line, the shape the extraction loop yields."""
+    from cogito_estella.mcp import codegraph
+    per: list[list[dict]] = [[] for _ in range(n)]
+    for e in codegraph.extract(text, source, offsets):
+        per[e.pop("sent_idx")].append(e)
+    return per
+
+
+def _rebuild(sents: list) -> str:
+    """Stored lines back at their offsets: each line keeps its column, which Python's
+    indentation-based syntax needs to parse again."""
+    out, end = [], 0
+    for s, o in sents:
+        if o > end:
+            out.append("\n" + " " * (o - end - 1) if end else " " * o)
+        out.append(s)
+        end = o + len(s)
+    return "".join(out)
+
+
+def _sections(source: str, text: str, offsets: list[int]) -> list[str]:
+    """Heading paths for prose; a code file has none (`# comment` is not a heading)."""
+    return section_paths(text, offsets) if is_prose(source) else [""] * len(offsets)
+
+
 def _code_terms(line: str, path: str) -> str:
     """What a code line is searched by: its text, its identifiers split at camelCase and
     snake_case boundaries (`timeoutSeconds` -> timeout seconds) and its file path words."""
@@ -253,9 +280,12 @@ def _pull_up_successors(scores, keys):
     for i in top:
         if scores[i] <= 0:
             break
-        j = where.get((keys[i][0], keys[i][1] + 1))
-        if j is not None:
-            out[j] = max(out[j], NEIGHBOR_WEIGHT * scores[i])
+        # a code line is often a comment or a name whose value sits on the next lines
+        reach = 1 if is_prose(keys[i][0]) else CODE_NEIGHBORS
+        for d in range(1, reach + 1):
+            j = where.get((keys[i][0], keys[i][1] + d))
+            if j is not None:
+                out[j] = max(out[j], NEIGHBOR_WEIGHT ** d * scores[i])
     return out
 
 
@@ -341,9 +371,12 @@ class GraphStore:
         texts = [s for s, _ in sents]
         offsets = [o for _, o in sents]
         ex = self._ex
+        prose = is_prose(source)
         recs_per: list[list[dict]] = []
+        if not prose:
+            recs_per = _code_graph(_rebuild(sents), source, offsets, len(texts))
         with _quiet():
-            for i in range(0, len(texts), BATCH):
+            for i in range(0, len(texts) if prose else 0, BATCH):
                 recs_per.extend(ex.extract_batch_with_provenance(
                     texts[i:i + BATCH], doc_offsets=offsets[i:i + BATCH]))
         for k, recs in enumerate(recs_per):
@@ -352,7 +385,8 @@ class GraphStore:
                 rec.update(id=self.next_id, source=source, sent_idx=k)
                 self._add_edge(rec)
         prev.pop("lite", None)
-        self._embed_source(ex, source, texts)
+        if prose:
+            self._embed_source(ex, source, texts)
         self._invalidate_index()
 
     # -- ingestion -----------------------------------------------------------
@@ -392,7 +426,7 @@ class GraphStore:
                                                                        False)
             if prev and prev["sha256"] == digest and not upgrade:
                 if "sections" not in prev:         # indexed before sections existed: the
-                    prev["sections"] = section_paths(  # text and offsets are enough, no
+                    prev["sections"] = _sections(source,  # text and offsets are enough, no
                         text, [o for _, o in prev["sents"]])   # extraction runs again
                     if save:
                         self.save()
@@ -402,12 +436,17 @@ class GraphStore:
             if prev:
                 self.drop_source(source)
             ex = self.extractor
-            sents = self.split(text, by_line=not is_prose(source))
+            # the graph heads and the encoder were trained on prose: on code lines they add
+            # wrong facts and a cosine that misleads the ranking (22/30 against 29/30 lite)
+            prose = is_prose(source)
+            sents = self.split(text, by_line=not prose)
             texts = [s for s, _ in sents]
             offsets = [o for _, o in sents]
             recs_per: list[list[dict]] = []
+            if not prose and not getattr(ex, "lite", False):
+                recs_per = _code_graph(text, source, offsets, len(texts))
             with _quiet():
-                for i in range(0, len(texts), BATCH):
+                for i in range(0, len(texts) if prose else 0, BATCH):
                     recs_per.extend(ex.extract_batch_with_provenance(
                         texts[i:i + BATCH], doc_offsets=offsets[i:i + BATCH]))
             n_new = 0
@@ -419,10 +458,11 @@ class GraphStore:
                     n_new += 1
             raw = ntok(text)
             self.docs[source] = {"sha256": digest, "tokens": raw, "sentences": len(sents),
-                                 "sents": sents, "sections": section_paths(text, offsets)}
+                                 "sents": sents, "sections": _sections(source, text, offsets)}
             if getattr(ex, "lite", False):
                 self.docs[source]["lite"] = True
-            self._embed_source(ex, source, texts)
+            if prose:
+                self._embed_source(ex, source, texts)
             self._invalidate_index()
             self._sync_raw_tokens()
             graph_tok = ntok(self.render_edges(
@@ -589,16 +629,21 @@ class GraphStore:
 
     # -- retrieval ----------------------------------------------------------------
     def resolve(self, name: str) -> str | None:
+        if name.strip() in self.adj:             # code keeps case: `Pay` the class, `pay` the method
+            return name.strip()
         q = name.strip().lower()
         if not q:
             return None
         if q in self.adj:
             return q
+        same = [e for e in self.adj if e.lower() == q]
+        if same:
+            return max(same, key=lambda e: len(self.adj[e]))
         if len(q) < 2:               # too short for prefix/substring/plural guessing
             return None
         cands = [e for e in self.adj
-                 if e.startswith(q) or (len(e) >= 3 and q.startswith(e))
-                 or (len(q) >= 4 and q in e)]
+                 if e.lower().startswith(q) or (len(e) >= 3 and q.startswith(e.lower()))
+                 or (len(q) >= 4 and q in e.lower())]
         if not cands and q.endswith("s"):
             return self.resolve(q[:-1])
         return max(cands, key=lambda e: len(self.adj[e])) if cands else None
@@ -768,9 +813,10 @@ class GraphStore:
                     if e["id"] not in seen:
                         seen.add(e["id"])
                         edges.append(e)
-            # every retrieved fact boosts its own sentence, whether or not the line survives
+            # every retrieved fact boosts its own sentence, whether or not the line survives;
+            # code facts do not: a name like `pay` sits on dozens of lines (15/30 against 18/30)
             boost = {pos[(e["source"], e["sent_idx"])] for e in edges
-                     if (e["source"], e["sent_idx"]) in pos}
+                     if (e["source"], e["sent_idx"]) in pos and e.get("pattern") != "syntax"}
             mat, mask = self._embedding_matrix(keys) if dense else (None, None)
             snap = _AskSnapshot(texts=texts, keys=keys, ents=ents, boost=boost, mat=mat,
                                 mask=mask, cover=self._embedded_note(),

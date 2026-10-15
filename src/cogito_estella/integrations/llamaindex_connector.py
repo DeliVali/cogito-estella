@@ -350,8 +350,9 @@ class CogitoGraphExtractor:
     def _encode(self, texts, lang="eng_Latn"):
         """Head input: the encoder's native contract unless the checkpoints say the
         heads were trained on normalized vectors."""
-        raw = torch.from_numpy(self.encoder.encode(texts, lang, batch_size=_ENC_BATCH))
-        unit = torch.nn.functional.normalize(raw, p=2, dim=1)
+        mat = torch.from_numpy(self.encoder.encode(texts, lang, batch_size=_ENC_BATCH,
+                                                   normalize=self.head_normalize or None))
+        unit = mat if self.head_normalize else torch.nn.functional.normalize(mat, p=2, dim=1)
         # the store asks for the same sentences' retrieval vectors right after extracting
         # them: keeping them saves the second encoder pass, half of a full ingest
         recent = getattr(self, "_recent", None)
@@ -359,7 +360,7 @@ class CogitoGraphExtractor:
             recent = self._recent = {}
         for t, row in zip(texts, unit.numpy()):
             recent[(lang, t)] = row
-        return (unit if self.head_normalize else raw).to(self.device)
+        return mat.to(self.device)
 
     def encode_batch(self, texts: list, lang: str = "eng_Latn"):
         """Sentence embeddings for retrieval: [N, 1024] float16, L2-normalized, in order."""

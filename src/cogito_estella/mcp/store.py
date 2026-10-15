@@ -128,18 +128,27 @@ class TextOnlyExtractor:
         return [[] for _ in texts]
 
 
-LONG_SENTENCE = 1000            # chars above which a lite "sentence" is cut at spaces
-CHUNK = 400                     # target chars of each piece
+LONG_SENTENCE = 150             # tokens above which a lite "sentence" is cut into pieces
+CHUNK = 80                      # target tokens of each piece
 
 
 def _chunks(sentence: str) -> list[str]:
-    """A sentence longer than LONG_SENTENCE in pieces of about CHUNK chars, cut at spaces:
-    a script without sentence stops otherwise leaves one passage too big for any budget."""
-    if len(sentence) <= LONG_SENTENCE:
+    """A sentence over LONG_SENTENCE tokens in pieces of about CHUNK tokens, cut at spaces
+    where the script has them and between characters where it does not. Counted in tokens,
+    not characters: a Thai or Chinese character costs several times an English one, and a
+    piece that outgrows the reply budget is dropped whole."""
+    if len(sentence) < 2 * LONG_SENTENCE or ntok(sentence) <= LONG_SENTENCE:
         return [sentence]
+    width = max(1, len(sentence) * CHUNK // ntok(sentence))   # chars per piece, this text
     out, cur = [], ""
     for word in sentence.split(" "):
-        if cur and len(cur) + 1 + len(word) > CHUNK:
+        while len(word) > width:                   # an unspaced run longer than a piece
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(word[:width])
+            word = word[width:]
+        if cur and len(cur) + 1 + len(word) > width:
             out.append(cur)
             cur = word
         else:

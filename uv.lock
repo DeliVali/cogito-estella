@@ -511,7 +511,7 @@ wheels = [
 
 [[package]]
 name = "cogito-estella"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },

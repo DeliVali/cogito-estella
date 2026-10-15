@@ -1,5 +1,18 @@
 # Cogito Estella (v0.19.2)
 
+[![CI](https://github.com/DeliVali/cogito-estella/actions/workflows/ci.yml/badge.svg)](https://github.com/DeliVali/cogito-estella/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/cogito-estella)](https://pypi.org/project/cogito-estella/)
+[![npm](https://img.shields.io/npm/v/cogito-estella)](https://www.npmjs.com/package/cogito-estella)
+[![Python](https://img.shields.io/pypi/pyversions/cogito-estella)](https://pypi.org/project/cogito-estella/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Hugging Face](https://img.shields.io/badge/weights-Hugging%20Face-yellow)](https://huggingface.co/DeliVali/cogito-estella)
+
+![input tokens](https://img.shields.io/badge/input%20tokens-6.2%C3%97%20fewer%20than%20Read%2FGrep-orange)
+![MCP](https://img.shields.io/badge/MCP-16%20clients-blue)
+![lite](https://img.shields.io/badge/default%20index-no%20model%2C%20no%20torch-teal)
+![code graph](https://img.shields.io/badge/code%20graph-tree--sitter-purple)
+![formats](https://img.shields.io/badge/reads-code%2C%20docx%2C%20pptx%2C%20xlsx%2C%20pdf%2C%20epub-green)
+
 Your agent reads a few hundred tokens instead of whole files. Point Estella at a folder
 of documents or code; for every question it returns only the lines that answer it, each
 tagged with its file and section. Indexing spends no LLM tokens.

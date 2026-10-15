@@ -13,7 +13,8 @@ dependencies = [
     "mcp>=2.1",
     "spacy>=3.8",
     "tiktoken>=0.7",
-    "onnxruntime>=1.17",
+    "onnxruntime>=1.17,<1.24; python_version < '3.11'",   # 1.24 dropped Python 3.10 wheels
+    "onnxruntime>=1.17; python_version >= '3.11'",
     "onnx>=1.15",
     "tokenizers>=0.15",
     "huggingface-hub>=0.23",

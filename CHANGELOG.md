@@ -2,7 +2,7 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
-## [Unreleased]
+## [0.19.3] - 2026-10-15
 
 ### Removed
 - `quickstart.py`, `tools/demo_observability.py` and the demo GIFs: they loaded the SONAR encoder and v0.7.0 weights that are no longer distributed. The README no longer documents the SONAR encoder.

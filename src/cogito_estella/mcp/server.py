@@ -352,7 +352,7 @@ def _register_compact(mcp, t: Tools, corpus: list, indexed_at_startup: bool) -> 
     if indexed_at_startup:
         return
 
-    @mcp.tool(description="Index a file or directory (txt, md, html, pdf) so `ask` can "
+    @mcp.tool(description="Index a file or directory (any text file, html, pdf) so `ask` can "
                           "answer from it. Uses no LLM tokens.",
               annotations=WRITES)
     def ingest(path: str) -> str:

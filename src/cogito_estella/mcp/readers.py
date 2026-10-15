@@ -1,11 +1,31 @@
-"""Documents to plain text: txt/md verbatim, arXiv/LaTeXML-aware HTML, optional PDF."""
+"""Documents to plain text: any text file verbatim (code, config, Dockerfile...), arXiv/LaTeXML-aware
+HTML, optional PDF. Binary files are recognized by content, not by extension."""
 from __future__ import annotations
 
 import re
 from html.parser import HTMLParser
 from pathlib import Path
 
-SUFFIXES = {".txt", ".md", ".html", ".htm", ".pdf"}
+SUFFIXES = {".txt", ".md", ".html", ".htm", ".pdf"}      # always read, whatever the content
+MAX_BYTES = 2_000_000           # a directory walk skips larger files (lock files, dumps, data)
+# never walked: dependencies, caches, build output; hidden entries (.git, .env) are skipped too,
+# except the hidden folders that hold project configuration
+SKIP_DIRS = {"node_modules", "__pycache__", "venv", "dist", "build", "target", "site-packages"}
+KEEP_HIDDEN = {".github", ".gitlab", ".circleci", ".devcontainer"}
+# prose is split into sentences; every other text file (code, config) into lines
+PROSE = {".txt", ".md", ".html", ".htm", ".pdf", ".rst", ".tex", ".org", ".adoc"}
+
+
+CODE_NAMES = ("dockerfile", "containerfile", "makefile", "jenkinsfile", "procfile", "gemfile",
+              "vagrantfile", "justfile")
+
+
+def is_prose(name: str) -> bool:
+    """Raw text and extensionless notes read as prose; a code or config file does not."""
+    p = Path(name)
+    if p.name.lower().startswith(CODE_NAMES):
+        return False
+    return not p.suffix or p.suffix.lower() in PROSE
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
          "param", "source", "track", "wbr"}
 _BLOCK = {"p", "div", "section", "li", "h1", "h2", "h3", "h4", "h5", "h6", "br", "tr",
@@ -90,28 +110,55 @@ def pdf_to_text(path: Path) -> str:
         raise ReaderError(f"cannot read PDF {path.name}: {exc}") from exc
 
 
+def is_text(path: Path) -> bool:
+    """No NUL byte and valid UTF-8 in the first 8 KiB: the test git and grep use for binaries."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8192)
+    except OSError:
+        return False
+    if b"\0" in head:
+        return False
+    try:
+        head.decode("utf-8")
+    except UnicodeDecodeError as exc:            # a multi-byte character cut at the boundary
+        return exc.start >= len(head) - 3
+    return True
+
+
+def _readable(path: Path) -> bool:
+    return path.suffix.lower() in SUFFIXES or is_text(path)
+
+
 def _read_file(path: Path) -> str:
     suffix = path.suffix.lower()
-    if suffix in (".txt", ".md"):
-        return path.read_text(encoding="utf-8", errors="ignore")
     if suffix in (".html", ".htm"):
         return html_to_text(path.read_text(encoding="utf-8", errors="ignore"))
     if suffix == ".pdf":
         return pdf_to_text(path)
-    raise ReaderError(f"unsupported file type {suffix!r} ({path.name}); "
-                      f"supported: {', '.join(sorted(SUFFIXES))}")
+    if suffix in SUFFIXES or is_text(path):
+        return path.read_text(encoding="utf-8", errors="ignore")
+    raise ReaderError(f"binary file, not indexed: {path.name}")
 
 
 def _dir_files(path: Path) -> list[Path]:
-    return sorted(p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in SUFFIXES)
+    out = []
+    for p in path.rglob("*"):
+        parts = p.relative_to(path).parts
+        if any((x.startswith(".") and x not in KEEP_HIDDEN) or x in SKIP_DIRS for x in parts) \
+                or not p.is_file():
+            continue
+        if p.stat().st_size <= MAX_BYTES and _readable(p):
+            out.append(p)
+    return sorted(out)
 
 
 def source_names(path: Path) -> list[str]:
-    """The source names `iter_sources` would yield for `path`, without reading any file."""
+    """The source names `iter_sources` would yield for `path`."""
     path = Path(path)
     if path.is_dir():
         return [p.relative_to(path).as_posix() for p in _dir_files(path)]
-    return [str(path)] if path.is_file() and path.suffix.lower() in SUFFIXES else []
+    return [str(path)] if path.is_file() and _readable(path) else []
 
 
 def iter_sources(path: Path):

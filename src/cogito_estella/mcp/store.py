@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from cogito_estella.mcp.rank import LexicalScorer, SonarScorer, rank, singular_forms, tokenize
+from cogito_estella.mcp.readers import is_prose
 from cogito_estella.mcp.rerank import (
     FeatureContext,
     bigrams,
@@ -348,8 +349,16 @@ class GraphStore:
         self._invalidate_index()
 
     # -- ingestion -----------------------------------------------------------
-    def split(self, text: str) -> list[tuple[str, int]]:
-        """(sentence, absolute char offset) pairs; regex fallback without spaCy."""
+    def split(self, text: str, by_line: bool = False) -> list[tuple[str, int]]:
+        """(sentence, absolute char offset) pairs; regex fallback without spaCy. Code and
+        config are split by line: a sentence splitter reads a whole file as one sentence."""
+        if by_line:
+            out, cursor = [], 0
+            for line in text.splitlines(keepends=True):
+                if line.strip():
+                    out.append((line.strip(), cursor + len(line) - len(line.lstrip())))
+                cursor += len(line)
+            return out
         with _quiet():                             # the first scan may load spaCy
             nlp = self.extractor._scanner()
         sents = ([s.text.strip() for s in nlp(text).sents] if nlp
@@ -386,7 +395,7 @@ class GraphStore:
             if prev:
                 self.drop_source(source)
             ex = self.extractor
-            sents = self.split(text)
+            sents = self.split(text, by_line=not is_prose(source))
             texts = [s for s, _ in sents]
             offsets = [o for _, o in sents]
             recs_per: list[list[dict]] = []
@@ -432,7 +441,7 @@ class GraphStore:
                     out.append(self.ingest_text(item, name, save=False))
             if not out:
                 out.append(f"source={path} error=no supported documents "
-                           "(txt, md, html, htm, pdf)")
+                           "(text files, html, pdf)")
             if save:
                 self.save()
         return out
@@ -523,7 +532,12 @@ class GraphStore:
         """IDF over the whole universe: built once per corpus, not once per question."""
         with self._lock:
             if self._lex is None:
-                self._lex = LexicalScorer(self.sentence_index()[0])
+                texts, keys, _ = self.sentence_index()
+                # a code line rarely names its file ("which port does the Dockerfile expose?"):
+                # its path words count as its own for matching, never for display
+                self._lex = LexicalScorer([
+                    t if is_prose(k[0]) else f"{t} {re.sub(r'[^A-Za-z0-9]+', ' ', k[0])}"
+                    for t, k in zip(texts, keys)])
             return self._lex
 
     def sentence_index(self) -> tuple[list, list, dict]:

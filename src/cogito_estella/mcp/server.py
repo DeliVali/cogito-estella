@@ -228,6 +228,14 @@ class Tools:
         return self.store.stats()
 
 
+def _annotations():
+    from mcp.types import ToolAnnotations
+    # read-only tools let clients that gate side effects (Codex, Cursor) run them unattended
+    return (ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+            ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True,
+                            openWorldHint=False))
+
+
 def build_server(store: GraphStore, tools: Tools | None = None, corpus=None,
                  indexed_at_startup: bool = False):
     """The MCP server over `store`. `corpus` names the sources the compact `ask`
@@ -326,6 +334,7 @@ def schema_tokens(mcp) -> int:
 
 
 def _register_compact(mcp, t: Tools, corpus: list, indexed_at_startup: bool) -> None:
+    READ_ONLY, WRITES = _annotations()
     label = corpus_label(corpus)
     where = f"the indexed documents ({label})" if label else "the documents indexed with `ingest`"
 
@@ -335,7 +344,8 @@ def _register_compact(mcp, t: Tools, corpus: list, indexed_at_startup: bool) -> 
     @mcp.tool(description=f"Answer a question from {where}. Pass the question as asked: it "
                           "finds the lines that answer it even when the wording differs, "
                           "which an exact text search does not. Use it before searching or "
-                          "reading those files; one call is enough.")
+                          "reading those files; one call is enough.",
+              annotations=READ_ONLY)
     def ask(question: str) -> str:
         return t.ask(question)
 
@@ -343,15 +353,17 @@ def _register_compact(mcp, t: Tools, corpus: list, indexed_at_startup: bool) -> 
         return
 
     @mcp.tool(description="Index a file or directory (txt, md, html, pdf) so `ask` can "
-                          "answer from it. Uses no LLM tokens.")
+                          "answer from it. Uses no LLM tokens.",
+              annotations=WRITES)
     def ingest(path: str) -> str:
         return t.ingest(path)
 
 
 def _register_full(mcp, t: Tools) -> None:
+    READ_ONLY, WRITES = _annotations()
     default_budget = t.budget
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     def ask(question: str, budget: int = default_budget, use_dense: bool = False,
             use_sonar: bool = False, deep: bool = False) -> str:
         """Start here for any question: graph facts, then a '--' line, then the source
@@ -370,24 +382,24 @@ def _register_full(mcp, t: Tools) -> None:
         facts and encoder ranking to documents indexed without it."""
         return t.ask(question, budget, use_dense, use_sonar, deep)
 
-    @mcp.tool()
+    @mcp.tool(annotations=WRITES)
     def ingest(path_or_text: str, source: str = "") -> str:
         """Ingest a file, a directory (txt/md/html/pdf), or raw text into the graph.
         Runs the local Cogito model: costs 0 LLM tokens. Returns one line per document."""
         return t.ingest(path_or_text, source)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     def query(entity: str, hops: int = 1, limit: int = 25) -> str:
         """Facts about an entity, one per line `subject relation object #edge_ids`.
         Facts after '~ class-only, verify with provenance:' carry a coarse class label."""
         return t.query(entity, hops, limit)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     def provenance(edge_ids: str) -> str:
         """Exact source sentence + character spans for edge ids (comma-separated)."""
         return t.provenance(edge_ids)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     def search(term: str, limit: int = 8) -> str:
         """Sentences containing every word of `term`, in any order: the text fallback
         when the graph has no fact. Pass a few distinctive words, not a full question or
@@ -395,12 +407,12 @@ def _register_full(mcp, t: Tools) -> None:
         multi-word phrase exactly."""
         return t.search(term, limit)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     def entities(prefix: str = "", limit: int = 30) -> str:
         """Known entities with their degree, optionally filtered by prefix."""
         return t.entities(prefix, limit)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY)
     def stats() -> str:
         """Token ledger: raw tokens ingested vs tokens served, persistence status."""
         return t.stats()

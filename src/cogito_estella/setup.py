@@ -26,6 +26,7 @@ class Client:
     path: object            # (home, project) -> Path of the config file
     kind: str               # json key layout, or "toml"
     detect: object          # (home, project) -> bool: is this client on the machine?
+    style: str = "plain"    # entry shape when it differs from {command, args}
 
 
 def _desktop_config(home: Path) -> Path:
@@ -35,6 +36,27 @@ def _desktop_config(home: Path) -> Path:
         return Path(os.environ.get("APPDATA", home / "AppData/Roaming")) / \
             "Claude/claude_desktop_config.json"
     return home / ".config/Claude/claude_desktop_config.json"
+
+
+def _code_user(home: Path) -> Path:
+    """VS Code's user directory, where its extensions keep their settings."""
+    if sys.platform == "darwin":
+        return home / "Library/Application Support/Code/User"
+    if sys.platform.startswith("win"):
+        return Path(os.environ.get("APPDATA", home / "AppData/Roaming")) / "Code/User"
+    return home / ".config/Code/User"
+
+
+def _extension(home: Path, ext: str) -> bool:
+    return (_code_user(home) / "globalStorage" / ext).exists() or \
+        any((home / ".vscode/extensions").glob(f"{ext}-*"))
+
+
+def _antigravity_config(home: Path) -> Path:
+    # the shared layout (~/.gemini/config) replaced ~/.gemini/antigravity; keep an old install's file
+    old = home / ".gemini/antigravity/mcp_config.json"
+    return old if old.exists() and not (home / ".gemini/config").exists() \
+        else home / ".gemini/config/mcp_config.json"
 
 
 CLIENTS = (
@@ -50,6 +72,24 @@ CLIENTS = (
            "mcpServers", lambda h, p: (h / ".codeium/windsurf").exists()),
     Client("gemini", "Gemini CLI", lambda h, p: p / ".gemini/settings.json", "mcpServers",
            lambda h, p: (h / ".gemini").exists()),
+    Client("kiro", "Kiro", lambda h, p: p / ".kiro/settings/mcp.json", "mcpServers",
+           lambda h, p: (h / ".kiro").exists() or shutil.which("kiro") is not None),
+    Client("antigravity", "Antigravity", lambda h, p: _antigravity_config(h), "mcpServers",
+           lambda h, p: (h / ".gemini/antigravity").exists() or (h / ".gemini/config").exists()
+           or shutil.which("antigravity") is not None),
+    Client("cline", "Cline", lambda h, p: _code_user(h) /
+           "globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+           "mcpServers", lambda h, p: _extension(h, "saoudrizwan.claude-dev")),
+    Client("roo", "Roo Code", lambda h, p: p / ".roo/mcp.json", "mcpServers",
+           lambda h, p: _extension(h, "rooveterinaryinc.roo-cline")),
+    Client("zed", "Zed", lambda h, p: h / ".config/zed/settings.json", "context_servers",
+           lambda h, p: (h / ".config/zed").exists() or shutil.which("zed") is not None),
+    Client("copilot-cli", "GitHub Copilot CLI", lambda h, p: h / ".copilot/mcp-config.json",
+           "mcpServers", lambda h, p: shutil.which("copilot") is not None, style="copilot"),
+    Client("qwen", "Qwen Code", lambda h, p: p / ".qwen/settings.json", "mcpServers",
+           lambda h, p: (h / ".qwen").exists() or shutil.which("qwen") is not None),
+    Client("amazon-q", "Amazon Q", lambda h, p: h / ".aws/amazonq/mcp.json", "mcpServers",
+           lambda h, p: (h / ".aws/amazonq").exists() or shutil.which("q") is not None),
     Client("codex", "Codex", lambda h, p: h / ".codex/config.toml", "toml",
            lambda h, p: (h / ".codex").exists()),
     Client("opencode", "opencode", lambda h, p: p / "opencode.json", "mcp",
@@ -72,6 +112,8 @@ def server_command(docs: list[Path], project: Path) -> tuple[str, list[str]]:
 def entry_for(client: Client, command: str, args: list[str]) -> dict:
     if client.kind == "servers":                           # VS Code
         return {"type": "stdio", "command": command, "args": args}
+    if client.style == "copilot":                          # Copilot CLI: "local", tool list
+        return {"type": "local", "command": command, "args": args, "tools": ["*"]}
     if client.kind == "mcp":                               # opencode
         return {"type": "local", "command": [command, *args], "enabled": True}
     return {"command": command, "args": args}

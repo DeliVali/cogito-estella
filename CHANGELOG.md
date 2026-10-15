@@ -2,7 +2,7 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
-## [Unreleased]
+## [0.19.4] - 2026-10-15
 
 ### Changed
 - **`ask` returns 300 tokens by default instead of 600** (`--budget`, `Estella(budget=)`); a doubtful reply still widens itself to 600. Long Claude Code sessions, 40 questions over code, PDF, Word, Excel and PowerPoint: Opus 39/40 at both budgets, $6.44 → $4.97; Haiku 37/40 → 36/40, $0.18 → $0.15. With the agent's own `Read`/`Grep` instead: 24/40 for both, $18.34 and $0.40. Tried and dropped: trimming replies by the scorer's confidence (even at `p ≥ 0.9` it cut the answer line in 15 to 25 % of cases) and not resending lines already sent in a session (11 % of reply tokens).

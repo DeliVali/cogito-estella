@@ -162,3 +162,83 @@ def test_codex_keeps_windows_paths_valid_when_rewriting(tmp_path):
     path.write_text(st.planned_text(client, path, r"C:\py\cogito-mcp.exe", args))
     text = st.planned_text(client, path, r"C:\py\cogito-mcp.exe", args)   # replace path
     assert tomllib.loads(text)["mcp_servers"]["cogito-estella"]["args"] == args
+
+
+def test_kiro_and_antigravity_get_their_own_files(tmp_path):
+    from cogito_estella.setup import run
+    home, proj = tmp_path / "home", tmp_path / "proj"
+    (home / ".kiro").mkdir(parents=True)
+    (home / ".gemini/antigravity").mkdir(parents=True)
+    (proj / "docs").mkdir(parents=True)
+    assert run(["--clients", "kiro,antigravity", "--yes"], home=home, project=proj,
+               out=lambda *a: None) == 0
+    kiro = json.loads((proj / ".kiro/settings/mcp.json").read_text())
+    agy = json.loads((home / ".gemini/config/mcp_config.json").read_text())
+    for cfg in (kiro, agy):
+        assert cfg["mcpServers"]["cogito-estella"]["args"][-2] == "--dir"
+
+
+def test_an_old_antigravity_install_keeps_its_file(tmp_path):
+    from cogito_estella.setup import CLIENTS
+    home = tmp_path
+    old = home / ".gemini/antigravity/mcp_config.json"
+    old.parent.mkdir(parents=True)
+    old.write_text("{}")
+    agy = next(c for c in CLIENTS if c.key == "antigravity")
+    assert agy.path(home, tmp_path) == old
+
+
+@pytest.mark.parametrize("key,where,section", [
+    ("cline", ("home/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/"
+               "cline_mcp_settings.json"), "mcpServers"),
+    ("roo", "proj/.roo/mcp.json", "mcpServers"),
+    ("zed", "home/.config/zed/settings.json", "context_servers"),
+    ("copilot-cli", "home/.copilot/mcp-config.json", "mcpServers"),
+    ("qwen", "proj/.qwen/settings.json", "mcpServers"),
+    ("amazon-q", "home/.aws/amazonq/mcp.json", "mcpServers"),
+])
+def test_more_clients_get_an_entry_in_their_own_file(tmp_path, monkeypatch, key, where, section):
+    from cogito_estella.setup import run
+    monkeypatch.setattr(sys, "platform", "linux")
+    home, proj = tmp_path / "home", tmp_path / "proj"
+    (proj / "docs").mkdir(parents=True)
+    home.mkdir()
+    assert run(["--clients", key, "--yes"], home=home, project=proj, out=lambda *a: None) == 0
+    entry = json.loads((tmp_path / where).read_text())[section]["cogito-estella"]
+    assert entry["args"][-2] == "--dir"
+    if key == "copilot-cli":
+        assert entry["type"] == "local" and entry["tools"] == ["*"]
+
+
+def test_zed_settings_with_comments_are_left_alone(tmp_path):
+    from cogito_estella.setup import run
+    home, proj = tmp_path / "home", tmp_path / "proj"
+    (proj / "docs").mkdir(parents=True)
+    cfg = home / ".config/zed/settings.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('// my settings\n{"theme": "One Dark"}\n')
+    assert run(["--clients", "zed", "--yes"], home=home, project=proj, out=lambda *a: None) == 1
+    assert cfg.read_text().startswith("// my settings")
+
+
+@pytest.mark.parametrize("key,where,field,value", [
+    ("kiro", "proj/.kiro/settings/mcp.json", "autoApprove", "list"),
+    ("cline", ("home/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/"
+               "cline_mcp_settings.json"), "alwaysAllow", "list"),
+    ("roo", "proj/.roo/mcp.json", "alwaysAllow", "list"),
+    ("qwen", "proj/.qwen/settings.json", "trust", True),
+    ("gemini", "proj/.gemini/settings.json", "trust", True),
+])
+def test_read_only_tools_are_approved_where_the_client_allows_it(tmp_path, monkeypatch, key,
+                                                                  where, field, value):
+    from cogito_estella.setup import READ_ONLY_TOOLS, run
+    monkeypatch.setattr(sys, "platform", "linux")
+    home, proj = tmp_path / "home", tmp_path / "proj"
+    (proj / "docs").mkdir(parents=True)
+    home.mkdir()
+    run(["--clients", key, "--yes"], home=home, project=proj, out=lambda *a: None)
+    entry = json.loads((tmp_path / where).read_text())["mcpServers"]["cogito-estella"]
+    if value == "list":
+        assert entry[field] == READ_ONLY_TOOLS and "ingest" not in entry[field]
+    else:
+        assert entry[field] is value

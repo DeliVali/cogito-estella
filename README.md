@@ -1,4 +1,4 @@
-# Cogito Estella (v0.19.1)
+# Cogito Estella (v0.19.2)
 
 Your agent reads a few hundred tokens instead of whole documents. Point Estella at your
 files; for every question it hands the model only the passages that answer it, each
@@ -14,7 +14,7 @@ pip install cogito-estella        # Python 3.10-3.13, no GPU, no model download
 ```
 
 **Set up your agents in one command** (Claude Code, Claude Desktop, Cursor, VS Code,
-Windsurf, Gemini CLI, Codex, opencode): it finds the ones on this machine, shows the
+Windsurf, Gemini CLI, Kiro, Antigravity, Cline, Roo Code, Zed, Copilot CLI, Qwen Code, Amazon Q, Codex, opencode): it finds the ones on this machine, shows the
 change, asks before writing and backs up every file it touches.
 
 ```bash

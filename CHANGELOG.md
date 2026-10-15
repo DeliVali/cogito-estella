@@ -2,6 +2,13 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [0.19.2] - 2026-10-14
+
+### Added
+- **`setup` pre-approves the read-only tools** where the client has a key for it, so `ask` runs without a confirmation prompt: `autoApprove` (Kiro) and `alwaysAllow` (Cline, Roo Code) list `ask`, `query`, `provenance`, `search`, `entities`, `stats`, never `ingest`; Gemini CLI and Qwen Code take `trust: true` for the server. Clients that keep approval in their own UI (Claude Code, Cursor, VS Code, Zed, Copilot CLI) still ask once.
+- **`cogito-estella setup` registers eight more clients:** Kiro (`.kiro/settings/mcp.json`), Antigravity (`~/.gemini/config/mcp_config.json`, or `~/.gemini/antigravity/mcp_config.json` on an older install), Cline (VS Code global storage), Roo Code (`.roo/mcp.json`), Zed (`context_servers` in `~/.config/zed/settings.json`; a settings file with comments is left alone), GitHub Copilot CLI (`~/.copilot/mcp-config.json`, `type: local`), Qwen Code (`.qwen/settings.json`) and Amazon Q (`~/.aws/amazonq/mcp.json`). Paths from each client's documentation; tested against a simulated home, not inside each client. LM Studio and Trae are left to `--print` until their paths are confirmed.
+- **Tools declare MCP annotations**: `ask`, `query`, `provenance`, `search`, `entities` and `stats` are read-only, `ingest` is non-destructive. Codex in non-interactive mode refused `ask` for lack of approval; with the annotation it ran it and answered 3 of 3 questions through the entry `setup` wrote.
+
 ## [0.19.1] - 2026-10-14
 
 ### Added

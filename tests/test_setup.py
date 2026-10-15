@@ -152,3 +152,27 @@ def test_the_written_entry_starts_a_server_that_answers(env):
             return res.content[0].text
     out = asyncio.run(asyncio.wait_for(go(), 120))
     assert "[notes.md § Setup] The encoder maps text to a vector." in out
+
+
+def test_kiro_and_antigravity_get_their_own_files(tmp_path):
+    from cogito_estella.setup import run
+    home, proj = tmp_path / "home", tmp_path / "proj"
+    (home / ".kiro").mkdir(parents=True)
+    (home / ".gemini/antigravity").mkdir(parents=True)
+    (proj / "docs").mkdir(parents=True)
+    assert run(["--clients", "kiro,antigravity", "--yes"], home=home, project=proj,
+               out=lambda *a: None) == 0
+    kiro = json.loads((proj / ".kiro/settings/mcp.json").read_text())
+    agy = json.loads((home / ".gemini/config/mcp_config.json").read_text())
+    for cfg in (kiro, agy):
+        assert cfg["mcpServers"]["cogito-estella"]["args"][-2] == "--dir"
+
+
+def test_an_old_antigravity_install_keeps_its_file(tmp_path):
+    from cogito_estella.setup import CLIENTS
+    home = tmp_path
+    old = home / ".gemini/antigravity/mcp_config.json"
+    old.parent.mkdir(parents=True)
+    old.write_text("{}")
+    agy = next(c for c in CLIENTS if c.key == "antigravity")
+    assert agy.path(home, tmp_path) == old

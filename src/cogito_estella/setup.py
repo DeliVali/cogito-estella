@@ -37,6 +37,13 @@ def _desktop_config(home: Path) -> Path:
     return home / ".config/Claude/claude_desktop_config.json"
 
 
+def _antigravity_config(home: Path) -> Path:
+    # the shared layout (~/.gemini/config) replaced ~/.gemini/antigravity; keep an old install's file
+    old = home / ".gemini/antigravity/mcp_config.json"
+    return old if old.exists() and not (home / ".gemini/config").exists() \
+        else home / ".gemini/config/mcp_config.json"
+
+
 CLIENTS = (
     Client("claude-code", "Claude Code", lambda h, p: p / ".mcp.json", "mcpServers",
            lambda h, p: (h / ".claude").exists() or shutil.which("claude") is not None),
@@ -50,6 +57,11 @@ CLIENTS = (
            "mcpServers", lambda h, p: (h / ".codeium/windsurf").exists()),
     Client("gemini", "Gemini CLI", lambda h, p: p / ".gemini/settings.json", "mcpServers",
            lambda h, p: (h / ".gemini").exists()),
+    Client("kiro", "Kiro", lambda h, p: p / ".kiro/settings/mcp.json", "mcpServers",
+           lambda h, p: (h / ".kiro").exists() or shutil.which("kiro") is not None),
+    Client("antigravity", "Antigravity", lambda h, p: _antigravity_config(h), "mcpServers",
+           lambda h, p: (h / ".gemini/antigravity").exists() or (h / ".gemini/config").exists()
+           or shutil.which("antigravity") is not None),
     Client("codex", "Codex", lambda h, p: h / ".codex/config.toml", "toml",
            lambda h, p: (h / ".codex").exists()),
     Client("opencode", "opencode", lambda h, p: p / "opencode.json", "mcp",

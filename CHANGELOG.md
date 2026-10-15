@@ -2,6 +2,11 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`cogito-estella setup` registers Kiro and Antigravity** (`.kiro/settings/mcp.json` in the project; `~/.gemini/config/mcp_config.json`, or `~/.gemini/antigravity/mcp_config.json` on an older install). Both read the same `mcpServers` entry; tested against a simulated home, not a running IDE.
+
 ## [0.19.1] - 2026-10-14
 
 ### Added

@@ -19,7 +19,7 @@ def _tools(server):
 
 def test_the_python_api():
     init = _params(Estella.__init__)
-    assert {"paths", "full", "budget", "save_to"} <= set(init)
+    assert {"paths", "full", "budget", "save_to", "vectors"} <= set(init)
     assert init["full"] is False and init["save_to"] is None
     assert {"path_or_text", "name"} <= set(_params(Estella.add))
     assert {"question", "deep"} <= set(_params(Estella.ask))
@@ -39,5 +39,5 @@ def test_the_mcp_tools(fake_extractor, tmp_path):
 def test_the_server_flags():
     ns = parse_args(["--profile", "compact", "--budget", "300", "--lite", "--full",
                      "--ingest", "docs", "--dir", ".cogito", "--http", "8000",
-                     "--no-download", "--device", "cpu"])
-    assert ns.profile == "compact" and ns.budget == 300
+                     "--no-download", "--device", "cpu", "--no-vectors"])
+    assert ns.profile == "compact" and ns.budget == 300 and ns.vectors is False

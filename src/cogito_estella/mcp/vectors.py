@@ -1,4 +1,4 @@
-"""`--multilingual`: the lite index plus sentence vectors from a small multilingual model,
+"""The lite index plus sentence vectors from a small multilingual model,
 so a question finds its passage in another language. No torch: ONNX Runtime runs the
 model, quantized to int8 on this machine the first time (118 MB kept, any CPU).
 
@@ -22,7 +22,7 @@ NAME = "multilingual-e5-small-int8"
 DIM = 384
 MAX_TOKENS = 256
 BATCH = 32
-INSTALL = "pip install 'cogito-estella[multilingual]'"
+OFF = "COGITO_VECTORS"         # =0 serves the plain lite index, as --no-vectors does
 
 
 def cache_dir() -> Path:
@@ -65,7 +65,7 @@ class VectorExtractor(TextOnlyExtractor):
             import onnxruntime as ort
             from tokenizers import Tokenizer
         except ImportError as exc:
-            raise ImportError(f"--multilingual needs: {INSTALL}") from exc
+            raise ImportError("sentence vectors need onnxruntime and tokenizers") from exc
         self._np = np
         path = ensure_model(download)
         self._tok = Tokenizer.from_file(str(path / "tokenizer.json"))
@@ -96,3 +96,25 @@ class VectorExtractor(TextOnlyExtractor):
 
     def encode_query(self, texts):
         return self._encode(list(texts), "query: ")
+
+
+def lite_factory(vectors: bool | None = None, download: bool = True):
+    """The lite extractor: with vectors unless they are turned off, and the plain lite
+    index, with one line on stderr, when the model cannot be had (offline, a missing
+    package, a broken file). Loading happens at the first ingest or question."""
+    if vectors is None:
+        vectors = os.environ.get(OFF, "1").strip().lower() not in ("0", "false", "no", "off")
+    if not vectors:
+        return TextOnlyExtractor
+
+    def make():
+        try:
+            return VectorExtractor(download)
+        except Exception as exc:                    # noqa: BLE001 - lite still answers
+            import sys
+            print(f"cogito-mcp: sentence vectors unavailable ({exc}); serving the lite index "
+                  "without them", file=sys.stderr)
+            return TextOnlyExtractor()
+
+    make.lite = True
+    return make

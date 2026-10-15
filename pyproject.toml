@@ -13,6 +13,10 @@ dependencies = [
     "mcp>=2.1",
     "spacy>=3.8",
     "tiktoken>=0.7",
+    "onnxruntime>=1.17",
+    "onnx>=1.15",
+    "tokenizers>=0.15",
+    "huggingface-hub>=0.23",
 ]
 
 [project.optional-dependencies]

@@ -475,6 +475,12 @@ class GraphStore:
                         text, [o for _, o in prev["sents"]])   # extraction runs again
                     if save:
                         self.save()
+                if (self._ex is not None or self._factory is not None) and source not in \
+                        self.emb and is_prose(source) and getattr(self.extractor, "vectors", False):      # indexed before vectors: add them once
+                    self._embed_source(self.extractor, source, [t for t, _ in prev["sents"]])
+                    self._invalidate_index()
+                    if save:
+                        self.save()
                 return IngestResult(source, "unchanged", prev["sentences"], 0, prev["tokens"],
                                     0, 0.0, round(time.time() - t0, 2))
             status = "replaced" if prev else "ingested"

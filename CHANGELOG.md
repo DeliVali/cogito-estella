@@ -2,6 +2,11 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **Code lines in a compact reply are grouped under their file**, once, in file order. The repeated `[file]` tag was 40 % of a code reply; the room it frees holds more lines. Unseen code (30 questions): answers in the reply 19 instead of 18 at 600 tokens, 14 instead of 11 at 250; this repository's code reaches at 400 tokens what it reached at 600. With the agent: 29/30 either way, 3,905 input tokens per question instead of 4,310, against 8,413 for the agent's own `Read`/`Grep`.
+
 ## [0.19.3] - 2026-10-15
 
 ### Removed

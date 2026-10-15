@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Hugging Face](https://img.shields.io/badge/weights-Hugging%20Face-yellow)](https://huggingface.co/DeliVali/cogito-estella)
 
-![input tokens](https://img.shields.io/badge/input%20tokens-6.2%C3%97%20fewer%20than%20Read%2FGrep-orange)
+![input tokens](https://img.shields.io/badge/input%20tokens%20vs%20Read%2FGrep-6.2%C3%97%20fewer%20on%20docs%2C%202.2%C3%97%20on%20code-orange)
 ![MCP](https://img.shields.io/badge/MCP-16%20clients-blue)
 ![lite](https://img.shields.io/badge/default%20index-no%20model%2C%20no%20torch-teal)
 ![code graph](https://img.shields.io/badge/code%20graph-tree--sitter-purple)
@@ -75,7 +75,14 @@ when it needs the documents. Many small models never call a tool; send them
 
 Prose is split into sentences and keeps its Markdown heading path
 (`[CHANGELOG.md § 0.9.0] …`). Code is split into lines, and a line is found by its words,
-the parts of its identifiers (`timeoutSeconds` by "timeout") and its file path.
+the parts of its identifiers (`timeoutSeconds` by "timeout") and its file path. In a
+reply, code lines are grouped under their file, in file order:
+
+```
+[httpx/_config.py]
+  DEFAULT_TIMEOUT_CONFIG = Timeout(timeout=5.0)
+  DEFAULT_LIMITS = Limits(max_connections=100, max_keepalive_connections=20)
+```
 
 ## Lite and full
 
@@ -158,6 +165,10 @@ removing the agent's fixed system prompt):
 | Whole paper in the prompt | 30/30 | 17,908 | $0.129 |
 | The agent's own `Read`/`Grep` | 29/30 | 16,405 | $0.059 |
 | Estella `ask` | 29/30 | 2,631 | $0.030 |
+
+On the 30 unseen-code questions the agent's own `Read`/`Grep` also answered 29: it read
+8,413 input tokens per question, Estella 3,905 (2.2× fewer). Code is cheaper to grep than
+prose, since one identifier finds its line, so the saving there is smaller.
 
 Small local models: on 8 Wikipedia articles and 48 questions per model (Qwen2.5 1.5B and
 3B, CPU), sending `context` instead of the whole article kept accuracy within noise

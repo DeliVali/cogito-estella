@@ -11,7 +11,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,6 +51,7 @@ _CAPS = re.compile(r"\b[A-Z][\w'\-]*(?:\s+(?:of|the|de|and|&)?\s*[A-Z][\w'\-]*)*
 CODE_NEIGHBORS = 2              # lines after a code hit pulled up with it
 # a sentence ending here is cut mid-sentence: the splitter joins it to the next one
 _ABBREV_END = re.compile(r"(?:\bet al|\be\.g|\bi\.e|\bFig|\bTab|\bEq|\bvs|\bcf|\bSec|\bNo)\.[\],)]*$")
+VECTOR_ONLY_BELOW = 0.5        # share of question words in the corpus under which vectors rank alone
 LOW_CONFIDENCE = 0.3            # learned p= under which the reply probably misses the answer
 ASK_STYLES = ("full", "compact")
 # compact replies speak plain language at the point of use: a small model follows a line
@@ -918,6 +919,9 @@ class GraphStore:
         lexical = lex.score(question, snap.boost)
         if requested == "lexical" or not lex.n:
             return lexical, "lexical", None
+        if requested == "learned" and snap.mat is not None \
+                and getattr(self.extractor, "vectors", False):
+            return self._interleaved(question, lex, lexical, snap, budget)
         if requested == "learned":
             learned, conf = self._learned_scores(question, lex, lexical, snap, budget)
             return (learned, "learned", conf) if learned is not None \
@@ -937,6 +941,28 @@ class GraphStore:
                 out.append(DENSE_OFFSET + sonar[i] if sonar[i] >= DENSE_FLOOR else 0.0)
         return out, f"dense{snap.cover}", None
 
+    def _interleaved(self, question, lex, lexical, snap, budget):
+        """`--multilingual`: the learned lexical order and the vector order taken in turns,
+        or the vector order alone when few question words occur in the corpus (another
+        language). XQuAD, against either ranking alone: Thai 63.4 % (vectors 52.4, lexical
+        62.9), Arabic 82.2 (81.7, 71.9); Spanish over English text 95.7 (lexical 43)."""
+        dense, _, _ = self._score_sentences(question, lex, snap, "dense", budget)
+        q = set(tokenize(question))
+        if sum(t in lex.df for t in q) < VECTOR_ONLY_BELOW * max(1, len(q)):
+            return dense, "vectors", None
+        plain = replace(snap, mat=None, mask=None)    # the scorer was fitted
+        learned, _ = self._learned_scores(question, lex, lexical, plain, budget)  # without e5
+        if learned is None:
+            learned = lexical
+        n = len(dense)
+        by_learned = {i: r for r, i in enumerate(rank(learned, n))}
+        by_dense = {i: r for r, i in enumerate(rank(dense, n))}
+        out = []
+        for i in range(n):
+            a = by_learned[i] if learned[i] > 0 else n
+            out.append(1.0 / (1 + min(a, by_dense[i])) + 1e-6 / (1 + max(a, by_dense[i])))
+        return out, "interleaved", None
+
     def _encode_question(self, question, width=None):
         """The question as a flat row, or None when no encoder answers for it or its width
         does not match the stored rows: a mismatched product is a crash, not a ranking."""
@@ -944,7 +970,8 @@ class GraphStore:
             return None
         try:
             with _quiet():                         # stdout is the MCP wire
-                q = np.asarray(self.extractor.encode_batch([question]), dtype=np.float32)
+                encode = getattr(self.extractor, "encode_query", self.extractor.encode_batch)
+                q = np.asarray(encode([question]), dtype=np.float32)
         except Exception as exc:                   # noqa: BLE001 - a missing encoder is a fallback
             print(f"cogito-mcp: question encoding failed ({exc}); ask ranks lexically",
                   file=sys.stderr)

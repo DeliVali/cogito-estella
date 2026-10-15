@@ -2,6 +2,15 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Any language in `ask`.** Text that is not ASCII is split into Unicode words of any script (vowel signs stay in their word), each also indexed by a 4-character prefix that stands in for a stem, and scripts written without spaces (Chinese, Japanese, Thai, ...) as overlapping character pairs; ASCII text keeps the original tokens. A lite "sentence" over 1,000 characters is cut at spaces (Thai ends sentences with a space). XQuAD (the same 1,190 questions in 11 languages), answer in the compact reply, against 0.19.2: English 97.9 % → 98.0 % (p = 1); Spanish 95.0 → 96.6, German 90.2 → 92.4, Turkish 90.4 → 94.4, Vietnamese 84.6 → 96.3, Russian 15.8 → 92.5, Greek 23.5 → 86.5, Arabic 10.3 → 83.6, Hindi 12.1 → 85.5, Chinese 15.6 → 93.3, Thai 0 → 76.6 (each p < 0.001). English SQuAD: 2 of 1,140 questions fewer in each mode (McNemar p = 0.5). Folding accents was measured and dropped (it cost Vietnamese and Greek answers); the prefix length was chosen on XQuAD itself (4 against 5 and 6).
+- CI installs the base package (no torch, no spaCy model) on Linux, macOS and Windows with Python 3.10 and 3.13 and runs the lite tests and a real server answering over MCP.
+
+### Fixed
+- `setup` on Windows: rewriting the Codex entry kept the backslashes of a Windows path as TOML escapes, leaving an invalid file; the Claude Desktop path derives from the given home, so tests never touch the real config.
+
 ## [0.19.2] - 2026-10-14
 
 ### Added
@@ -17,9 +26,6 @@ Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemV
 ### Changed
 - **`ask` pulls up the sentence after each of its two best hits.** An answer often sits in the next sentence, which opens with a pronoun and shares no word with the question ("This model will be referred to as smaLlama."). The successor is scored at 0.9 of its predecessor, inside the same budget. On the 250 questions over the five papers the answer reached the reply 208 times instead of 203 (6 gained, 1 lost; 99/125 to 102/125 and 104/125 to 106/125 on the two halves); on 200 HotpotQA questions that were not used to choose the rule, over 1,972 paragraphs (about 270k tokens), 140 instead of 135 (6 gained, 1 lost, p = 0.125). Tokens per reply unchanged (594).
 - **The splitter keeps a citation or abbreviation in one sentence** (`et al.`, `e.g.`, `i.e.`, `Fig.`, `Eq.`, `Tab.`, `Sec.`, `cf.`, `vs.`, `No.`): "...a small Llama [Touvron et al., 2023]..." was cut in two. On the five papers 206 instead of 203 answers reached the reply; on HotpotQA it changes nothing (no citations).
-
-### Added
-- **Any language in `ask`.** Text that is not ASCII is split into Unicode words of any script (vowel signs stay in their word), each also indexed by a 4-character prefix that stands in for a stem, and scripts written without spaces (Chinese, Japanese, Thai, ...) as overlapping character pairs; ASCII text keeps the original tokens. A lite "sentence" over 1,000 characters is cut at spaces (Thai ends sentences with a space). XQuAD (the same 1,190 questions in 11 languages), answer in the compact reply: English 96.7 % unchanged; Spanish 93.2 → 95.3, German 87.7 → 90.5, Turkish 88.9 → 92.9, Vietnamese 86.0 → 95.8, Russian 13.9 → 91.7, Greek 22.5 → 86.8, Arabic 9.4 → 81.8, Hindi 11.6 → 85.7, Chinese 15.8 → 93.4, Thai 0 → 76.8. Folding accents was measured and dropped (it cost Vietnamese and Greek answers); the prefix length was chosen on XQuAD itself (4 against 5 and 6). English SQuAD moves by one question in each mode (McNemar p = 1).
 
 ## [0.19.0] - 2026-10-14
 

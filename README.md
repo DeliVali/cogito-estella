@@ -53,8 +53,8 @@ docs.ask("Who signed it?", deep=True)   # facts + encoder ranking; the model loa
 passages (`ask` prints the passages alone); the index is kept in `./.cogito`.
 
 **Languages.** Passages are found in any language: on XQuAD (the same questions in 11
-languages) the answer reaches the reply 96.7 % of the time in English, 90–96 % in Spanish,
-German, Turkish, Vietnamese, Russian and Chinese, 82–87 % in Greek, Arabic and Hindi, and
+languages) the answer reaches the reply 98 % of the time in English, 92–97 % in Spanish,
+German, Turkish, Vietnamese, Russian and Chinese, 84–87 % in Greek, Arabic and Hindi, and
 77 % in Thai. The graph model of the full server is English-only.
 
 **Which way?** If the model calls tools well, give it the MCP server: it calls `ask` when

@@ -2,6 +2,19 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+- `quickstart.py`, `tools/demo_observability.py` and the demo GIFs: they loaded the SONAR encoder and v0.7.0 weights that are no longer distributed. The README no longer documents the SONAR encoder.
+
+### Added
+- **Any text file is indexed, not only txt/md/html/pdf**: code, config, `Dockerfile`, YAML, JSON... A file is binary when its first 8 KiB hold a NUL byte or invalid UTF-8 (the test git uses), whatever its name. A directory walk skips hidden entries (`.git`, `.env`, `.venv`; `.github`, `.gitlab`, `.circleci`, `.devcontainer` are kept), `node_modules`, `__pycache__`, `venv`, `dist`, `build`, `target` and files over 2 MB.
+- **Office and other document formats, with no new dependency**: Word (`.docx`), PowerPoint (`.pptx`), Excel (`.xlsx`, one line per row), OpenDocument (`.odt`, `.odp`, `.ods`), EPUB (in spine order), RTF, email (`.eml`: subject, sender, date and body) and Jupyter notebooks (`.ipynb`: the cells). Read with the standard library; one archive member over 50 MB is refused. A legacy `.doc` reports "save it as .docx" instead of being skipped. Checked on files written by python-docx, python-pptx, openpyxl, odfpy and ebooklib: each was read and answered its question (8/8).
+- **Mobile and build files**: Kotlin, Java, Swift, Objective-C, Dart, Gradle (`.kts`), Android manifests and layouts, `Info.plist`, `.xcconfig`, `pubspec.yaml`; extensionless `Podfile`, `Fastfile`, `Appfile`, `Cartfile`, `BUILD`, `WORKSPACE`... are read as code. A code line is also found by the words of its identifiers (`timeoutSeconds` by "timeout"): 34/40 code questions answered in the reply (32 before), 37/40 at 1200 tokens; 10/10 on an Android + iOS + Flutter sample.
+- **The full server builds a code graph by syntax**: `defines`, `contains`, `calls`, `imports`, `inherits`, each on the line it comes from, for 40 languages through tree-sitter (`[full]` extra; checked on Python, Kotlin, Swift, TypeScript, Java and Go). The prose heads are no longer run on code: on 30 questions about unseen code (httpx, starlette, h11, anyio) they cut the agent's accuracy to 22/30; with code ranked like the lite index and the syntax graph beside it, 28/30 (lite: 29/30). Syntax facts are exact (no `class-only` divider), keep the case of names (`Pay` the class, `pay` the method; lookups stay case-insensitive), go to Neo4j like any fact, and do not boost the ranking of `ask`.
+- **`ask` searches twice for two-step questions**: the names its two best prose lines bring in are asked again and both replies interleave within the first one's size. On 200 HotpotQA questions not used to design it, the answer reaches the reply 149 times instead of 136; papers 209 instead of 210 of 250; code keeps one search (a second one cost 2 of 30).
+- **Code and config are split by line**, prose by sentence: a sentence splitter read a whole source file as one sentence. A code line also matches on its file path ("which port does the Dockerfile expose?"). On 10 questions about this repository's own code, CI and Dockerfile the answer reached the reply 9 times, against 6 without the path words; the 10 questions were also used to choose between file name (8) and path (9).
+
 ## [0.19.2] - 2026-10-14
 
 ### Added

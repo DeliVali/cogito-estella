@@ -599,7 +599,7 @@ def test_source_names_match_what_ingestion_will_call_the_documents(tmp_path):
     (tmp_path / "d" / "sub").mkdir(parents=True)
     (tmp_path / "d" / "a.md").write_text("x")
     (tmp_path / "d" / "sub" / "b.txt").write_text("y")
-    (tmp_path / "d" / "skip.py").write_text("z")
+    (tmp_path / "d" / "skip.bin").write_bytes(b"\x00z")
     assert source_names(tmp_path / "d") == [n for n, _ in iter_sources(tmp_path / "d")] \
         == ["a.md", "sub/b.txt"]
     assert source_names(tmp_path / "d" / "a.md") == [str(tmp_path / "d" / "a.md")]

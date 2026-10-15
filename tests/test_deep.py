@@ -129,3 +129,12 @@ def test_http_bind_spec():
     assert parse_bind("0.0.0.0:80") == ("0.0.0.0", 80)
     with pytest.raises(ValueError):
         parse_bind("host:notaport")
+
+
+def test_code_gets_no_facts_or_embeddings_from_the_prose_model(tmp_path, nlp):
+    store = GraphStore(extractor=_Full(), path=tmp_path / "g.json")
+    store.ingest_text("x = 1\ny = 2\n", "app.py")
+    store.ingest_text(DOC, "a.md")
+    assert {e["source"] for e in store.edges.values()} == {"a.md"}
+    assert "app.py" not in store.emb and "a.md" in store.emb
+    assert "lite" not in store.docs["app.py"]

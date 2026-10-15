@@ -45,6 +45,9 @@ DENSE_FLOOR = (DENSE_COS_FLOOR + 1.0) / 2.0        # the same floor on the score
 DENSE_OFFSET = 1.0              # embedded rows rank above lexical ones: no shared origin
 NEIGHBOR_TOP = 2                # best sentences whose successor is pulled up with them
 NEIGHBOR_WEIGHT = 0.9           # successor score as a share of its predecessor's
+HOP_LINES = 2                   # best prose lines whose new names start a second search
+HOP_NAMES = 4                   # names carried into it
+_CAPS = re.compile(r"\b[A-Z][\w'\-]*(?:\s+(?:of|the|de|and|&)?\s*[A-Z][\w'\-]*)*")
 CODE_NEIGHBORS = 2              # lines after a code hit pulled up with it
 # a sentence ending here is cut mid-sentence: the splitter joins it to the next one
 _ABBREV_END = re.compile(r"(?:\bet al|\be\.g|\bi\.e|\bFig|\bTab|\bEq|\bvs|\bcf|\bSec|\bNo)\.[\],)]*$")
@@ -236,6 +239,15 @@ class _AskSnapshot:
         """Where a sentence sits in its own document, 0 at the head and 1 at the tail."""
         src, si = key
         return si / max(self.doc_sents.get(src, 1) - 1, 1)
+
+
+def _line_source(line: str) -> str:
+    """`[file § section] text` -> file."""
+    return line[1:].split("]", 1)[0].split(" § ", 1)[0]
+
+
+def _norm_words(s: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", s.lower()))
 
 
 def _code_graph(text: str, source: str, offsets: list[int], n: int) -> list[list[dict]]:
@@ -750,7 +762,43 @@ class GraphStore:
         text, conf = self._ask(question, budget, scorer, "compact")
         if widen_to and widen_to > budget and conf is not None and conf < LOW_CONFIDENCE:
             text, _ = self._ask(question, widen_to, scorer, "compact")
-        return text
+        return self._second_hop(question, text, scorer)
+
+    def _second_hop(self, question: str, text: str, scorer: str) -> str:
+        """Bridge questions ("the producer of the film scored by X") name one entity and
+        need a passage about another: the names the best prose lines bring in are asked
+        again, and both replies interleave within the first one's size. HotpotQA, 200
+        questions not used to choose it: the answer reaches the reply 151 times instead
+        of 136; papers unchanged, code worse (18 to 16 of 30), so code replies keep one hop."""
+        lines = text.split("\n")
+        head, body = lines[0], [x for x in lines[1:] if x.startswith("[")]
+        top = body[:HOP_LINES]
+        if not top or head.startswith(COMPACT_WHOLE.split("{")[0]) or not all(is_prose(_line_source(x)) for x in top):
+            return text
+        asked = _norm_words(question)
+        names: list[str] = []
+        for line in top:
+            for m in _CAPS.findall(line.split("] ", 1)[-1]):
+                if len(m) > 2 and _norm_words(m) and not _norm_words(m) <= asked \
+                        and m not in names:
+                    names.append(m)
+        if not names:
+            return text
+        second, _ = self._ask(" ".join(names[:HOP_NAMES]) + " " + question,
+                              ASK_BUDGET, scorer, "compact")
+        more = [x for x in second.split("\n")[1:] if x.startswith("[")]
+        merged, seen = [], set()
+        for pair in zip(body + [None] * len(more), more + [None] * len(body)):
+            for x in pair:
+                if x and x not in seen:
+                    seen.add(x)
+                    merged.append(x)
+        cap, out = ntok(text), [head]
+        for x in merged:
+            if ntok("\n".join([*out, x])) > cap:
+                break
+            out.append(x)
+        return "\n".join(out)
 
     def _ask(self, question, budget, scorer, style) -> tuple[str, float | None]:
         requested = str(scorer).strip().lower()

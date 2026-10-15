@@ -154,6 +154,16 @@ def test_the_written_entry_starts_a_server_that_answers(env):
     assert "[notes.md § Setup] The encoder maps text to a vector." in out
 
 
+def test_codex_keeps_windows_paths_valid_when_rewriting(tmp_path):
+    tomllib = pytest.importorskip("tomllib")
+    client = next(c for c in st.CLIENTS if c.key == "codex")
+    path = tmp_path / "config.toml"
+    args = [r"C:\Users\me\docs", "--dir", r"C:\Users\me\.cogito"]
+    path.write_text(st.planned_text(client, path, r"C:\py\cogito-mcp.exe", args))
+    text = st.planned_text(client, path, r"C:\py\cogito-mcp.exe", args)   # replace path
+    assert tomllib.loads(text)["mcp_servers"]["cogito-estella"]["args"] == args
+
+
 def test_kiro_and_antigravity_get_their_own_files(tmp_path):
     from cogito_estella.setup import run
     home, proj = tmp_path / "home", tmp_path / "proj"

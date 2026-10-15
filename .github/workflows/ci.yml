@@ -28,3 +28,23 @@ jobs:
         run: uv run pytest tests/ -q
       - name: Build wheel
         run: uv build
+
+  install:
+    # the base package as a user installs it: no torch, no spaCy model, every OS
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: pip install the base package
+        run: python -m pip install . pytest
+      - name: The base install has no torch
+        run: python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('torch') is not None)"
+      - name: Lite path, setup, and a real server answering over MCP
+        run: python -m pytest tests/test_mcp_rank.py tests/test_setup.py -q

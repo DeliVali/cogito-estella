@@ -833,3 +833,21 @@ def test_estella_takes_long_raw_text_as_text(nlp):
     docs = Estella()
     docs.add("A sentence about the encoder. " * 200, name="long")
     assert "long" in docs.store.docs
+
+
+def test_a_lite_text_without_sentence_stops_is_cut_into_passages(nlp):
+    from cogito_estella.mcp.store import CHUNK, TextOnlyExtractor
+    store = GraphStore(extractor_factory=TextOnlyExtractor)
+    store.ingest_text(" ".join(f"คำ{i}" for i in range(600)), "th")
+    sents = store.docs["th"]["sents"]
+    from cogito_estella.mcp.tokens import ntok
+    assert len(sents) > 1 and all(ntok(s) <= 2 * CHUNK for s, _ in sents)
+    assert sents[1][1] > 0                                 # offsets still point into the text
+
+
+def test_an_unspaced_run_is_cut_between_characters(nlp):
+    from cogito_estella.mcp.store import CHUNK, _chunks
+    from cogito_estella.mcp.tokens import ntok
+    pieces = _chunks("自然言語処理" * 200)
+    assert len(pieces) > 1 and all(ntok(p) <= 2 * CHUNK for p in pieces)
+    assert "".join(pieces) == "自然言語処理" * 200

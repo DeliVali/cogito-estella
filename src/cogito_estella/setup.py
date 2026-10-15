@@ -32,9 +32,8 @@ class Client:
 def _desktop_config(home: Path) -> Path:
     if sys.platform == "darwin":
         return home / "Library/Application Support/Claude/claude_desktop_config.json"
-    if sys.platform.startswith("win"):
-        return Path(os.environ.get("APPDATA", home / "AppData/Roaming")) / \
-            "Claude/claude_desktop_config.json"
+    if sys.platform.startswith("win"):            # %APPDATA%, derived from `home` so a
+        return home / "AppData/Roaming/Claude/claude_desktop_config.json"   # test stays in it
     return home / ".config/Claude/claude_desktop_config.json"
 
 
@@ -149,7 +148,8 @@ def planned_text(client: Client, path: Path, command: str, args: list[str]) -> s
         section = _toml_section(command, args)
         pattern = re.compile(rf"^\[mcp_servers\.{re.escape(NAME)}\]\n(?:(?!\[).*\n?)*", re.MULTILINE)
         if pattern.search(old):
-            return pattern.sub(section, old)
+            return pattern.sub(lambda _m: section, old)   # a str replacement would read
+            # the backslashes of a Windows path as escapes
         return old + ("\n" if old and not old.endswith("\n") else "") + \
             ("\n" if old else "") + section
     try:

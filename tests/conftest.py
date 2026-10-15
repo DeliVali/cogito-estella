@@ -1,8 +1,12 @@
 """Shared fixtures. spaCy is optional: tests that need it skip cleanly when absent."""
 import hashlib
+import os
 
 import numpy as np
 import pytest
+
+# the suite never downloads the multilingual model; tests that want vectors use a fake one
+os.environ.setdefault("COGITO_VECTORS", "0")
 
 
 @pytest.fixture(scope="session")

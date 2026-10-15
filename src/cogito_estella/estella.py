@@ -14,7 +14,8 @@ from cogito_estella.mcp.server import (
     DEFAULT_BUDGET,
     DEFAULT_SCORER,
 )
-from cogito_estella.mcp.store import GraphStore, TextOnlyExtractor
+from cogito_estella.mcp.store import GraphStore
+from cogito_estella.mcp.vectors import lite_factory
 
 
 class Estella:
@@ -23,10 +24,12 @@ class Estella:
     `Estella("docs/", "notes.md")` indexes files or directories (any text file, html, pdf) with
     the lite index: spaCy only, ready in seconds. `full=True` loads the graph model instead
     (needs `pip install 'cogito-estella[full]'`). `save_to=".cogito"` keeps the index on
-    disk so the next run does not index unchanged files again."""
+    disk so the next run does not index unchanged files again. The lite index adds
+    multilingual sentence vectors (a 118 MB model, fetched once) so a question can find a
+    passage in another language; `vectors=False` leaves them out."""
 
     def __init__(self, *paths, full: bool = False, budget: int = DEFAULT_BUDGET,
-                 save_to: str | Path | None = None):
+                 save_to: str | Path | None = None, vectors: bool | None = None):
         if full:
             from cogito_estella.mcp.server import build_extractor
             from cogito_estella.mcp.weights import ensure_spacy_model, resolve
@@ -36,7 +39,7 @@ class Estella:
             factory = lambda: build_extractor(weights, ns)
             full_factory = None
         else:
-            factory = TextOnlyExtractor
+            factory = lite_factory(vectors)
             full_factory = self._full_loader() if importlib.util.find_spec("torch") else None
         self.budget = budget
         self.store = GraphStore(extractor_factory=factory, full_factory=full_factory,

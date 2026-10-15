@@ -15,6 +15,7 @@ from pathlib import Path
 from cogito_estella.encoders import ENCODERS, EncoderMismatch, encoder_revision
 from cogito_estella.mcp.readers import source_names
 from cogito_estella.mcp.store import ASK_SCORERS, SCORER_ALIASES, GraphStore, TextOnlyExtractor
+from cogito_estella.mcp.vectors import lite_factory
 from cogito_estella.mcp.tokens import ntok
 from cogito_estella.mcp.weights import WeightsError, ensure_spacy_model, resolve
 
@@ -453,6 +454,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="index sentences only: no graph model is loaded or downloaded, so "
                          "the server starts at once; `ask` keeps its learned ranking, the "
                          "graph tools have no facts for documents indexed this way")
+    ap.add_argument("--no-vectors", dest="vectors", action="store_false", default=None,
+                    help="lite without the multilingual sentence vectors: no model download, "
+                         "indexing about 10x faster, questions only match their own language "
+                         "(also COGITO_VECTORS=0)")
     ap.add_argument("--http", metavar="[HOST:]PORT",
                     help="serve over HTTP instead of stdio, for any client that cannot spawn "
                          "a process: MCP at /mcp, plus POST /ask and /context with "
@@ -554,7 +559,8 @@ def main(argv=None) -> None:
         ensure_spacy_model(download=ns.download)
         return build_extractor(w, ns)
 
-    factory = TextOnlyExtractor if ns.lite else (lambda: build_extractor(weights, ns))
+    factory = lite_factory(ns.vectors, ns.download) if ns.lite \
+        else (lambda: build_extractor(weights, ns))
     has_torch = importlib.util.find_spec("torch") is not None
     store = GraphStore(extractor_factory=factory, path=ns.dir / "graph.json",
                        full_factory=full_factory if ns.lite and has_torch else None)
@@ -562,7 +568,8 @@ def main(argv=None) -> None:
     # Explicit legacy checkpoints resolve their own encoder inside the extractor, which
     # is built lazily: name it there rather than guessing the default here.
     if ns.lite:
-        space = "encoder=none (lite)"
+        space = "encoder=none (lite)" if factory is TextOnlyExtractor \
+            else "encoder=multilingual-e5-small (lite, at the first index or question)"
     else:
         space = _encoder_line(weights.encoder) if weights.encoder else "encoder=from-checkpoints"
     print(f"cogito-mcp: graph {store.path} edges={len(store.edges)} docs={len(store.docs)} "

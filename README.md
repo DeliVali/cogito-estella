@@ -1,4 +1,4 @@
-# Cogito Estella (v0.19.4)
+# Cogito Estella (v0.20.0)
 
 [![CI](https://github.com/DeliVali/cogito-estella/actions/workflows/ci.yml/badge.svg)](https://github.com/DeliVali/cogito-estella/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/cogito-estella)](https://pypi.org/project/cogito-estella/)
@@ -25,7 +25,7 @@ $4.97 instead of $18.34 ([measured](#measured)).
 ## Quick start
 
 ```bash
-pip install cogito-estella          # Python 3.10-3.13, no GPU, no model download
+pip install cogito-estella          # Python 3.10-3.13, no GPU, no torch
 cogito-estella setup docs/          # registers the server with the agents on this machine
 ```
 
@@ -49,7 +49,7 @@ Other ways in:
 ```python
 from cogito_estella import Estella
 
-docs = Estella("docs/")                       # indexed in about a second
+docs = Estella("docs/")                       # indexed in seconds
 docs.ask("When did the embargo end?")         # the lines that answer it
 docs.context("When did the embargo end?")     # the question with its lines, for any model
 ```
@@ -87,21 +87,47 @@ reply, code lines are grouped under their file, in file order:
   DEFAULT_LIMITS = Limits(max_connections=100, max_keepalive_connections=20)
 ```
 
+Human languages too, and across them: the lite index keeps a multilingual sentence vector
+next to each sentence (multilingual-e5-small, run with ONNX Runtime and quantized to int8
+on first use: 118 MB, fetched once), so a Spanish question finds the English passage. On
+XQuAD (the same 1,190 questions in each language, 300-token replies) the answer reaches
+the reply:
+
+| Question → documents | Words only (`--no-vectors`) | With vectors (default) |
+| :--- | ---: | ---: |
+| English → English | 95.2 % | 97.8 % |
+| Spanish → Spanish | 92.0 % | 95.5 % |
+| Arabic → Arabic | 71.9 % | 82.2 % |
+| Chinese → Chinese | 76.8 % | 78.7 % |
+| Thai → Thai | 62.9 % | 63.4 % |
+| Spanish → English | 43 % | 95.7 % |
+| Chinese → English | 14 % | 87.8 % |
+| English → Chinese | 15 % | 65.0 % |
+
+The two rankings take turns in the reply, and the vectors rank alone when few of the
+question's words occur in the documents. They cost indexing time (about 1,300 tokens a
+second on 4 CPU cores, ten times the words-only index) and nothing per question beyond
+~60 ms. Offline, or without the model, the index serves words only and says so on stderr;
+`--no-vectors`, `Estella(..., vectors=False)` or `COGITO_VECTORS=0` turn them off. The
+graph model of the full server is English-only.
+
 ## Lite and full
 
-The lite index is the default and needs no model download. The full server adds a local
-model that turns documents into a knowledge graph.
+The lite index is the default and needs no torch. The full server adds a local model that
+turns documents into a knowledge graph.
 
 | | Lite (default) | Full (`pip install "cogito-estella[full]"`) |
 | :--- | :--- | :--- |
-| Finding the answer for `ask` | IDF shortlist, then a small learned re-ranker | the same, plus an encoder similarity for prose |
+| Finding the answer for `ask` | IDF shortlist and a small learned re-ranker, in turns with multilingual sentence vectors | IDF shortlist and the learned re-ranker, with the encoder similarity as one of its features |
 | Knowledge graph | none | prose: facts extracted by the model; code: definitions, calls, imports, inheritance by syntax |
-| Start-up | about a second | loads a 1.9 GB encoder (GPU optional) |
+| Start-up | about a second; indexing ~1,300 tokens/s | loads a 1.9 GB encoder (GPU optional) |
 | Tools | `ask`, `context` | also `query`, `provenance`, `search`, `entities`, Neo4j export |
 
-Both modes find answers the same way: a lexical shortlist ordered by a 12-feature learned
-scorer. The large model's job is the graph, not the search; as a ranking signal it adds
-under a point on prose and hurts on code, so code is never ranked with it. The agent
+Both modes start from a lexical shortlist ordered by a 12-feature learned scorer. The large
+model's job is the graph, not the search; as a ranking signal it adds under a point on
+prose and hurts on code, so code is never ranked with it. Across languages it is no match
+for the lite vectors: Spanish questions over English text 65 % against 96 %, English over
+English 82 % against 98 % when it ranks alone. The agent
 reading the reply does the understanding and rephrases when a reply misses.
 
 Start full with `cogito-mcp docs/ --full`, or keep a light session and load the graph model
@@ -188,6 +214,21 @@ tool, so `context` is its only route.
 
 Graph extraction on prose: Triple F1 0.852 for the default three-head ensemble, on
 held-out sentences whose entity and relation combinations never appeared in training.
+
+## Stable API
+
+From 1.0 these follow semantic versioning: removing or renaming any of them needs a
+new major version, while additions come in minor versions.
+
+- Python: `Estella(*paths, full=False, budget=300, save_to=None, vectors=None)` with `add`, `ask`,
+  `context` and `deep`.
+- Commands: `cogito-estella setup|ask|context` and the `cogito-mcp` flags listed under
+  Tools.
+- MCP: the tools and their parameters, the `context` prompt, and `POST /ask`,
+  `POST /context` and `GET /health` under `--http`.
+
+Everything else (`cogito_estella.mcp.*` internals, the training modules, the index files
+under `.cogito/`) can change in any release.
 
 ## Python and Neo4j
 

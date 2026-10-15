@@ -40,6 +40,7 @@ from cogito_estella.model.candidate_decoder import (
     decode_triples_coo,
 )
 
+_RECENT_MAX = 8192             # sentences kept between extraction and their retrieval vectors
 _ENC_BATCH = 64
 SAFETENSORS_META = "cogito"          # header key carrying the contract as JSON
 
@@ -349,12 +350,26 @@ class CogitoGraphExtractor:
     def _encode(self, texts, lang="eng_Latn"):
         """Head input: the encoder's native contract unless the checkpoints say the
         heads were trained on normalized vectors."""
-        mat = self.encoder.encode(texts, lang, batch_size=_ENC_BATCH,
-                                  normalize=self.head_normalize or None)
-        return torch.from_numpy(mat).to(self.device)
+        mat = torch.from_numpy(self.encoder.encode(texts, lang, batch_size=_ENC_BATCH,
+                                                   normalize=self.head_normalize or None))
+        unit = mat if self.head_normalize else torch.nn.functional.normalize(mat, p=2, dim=1)
+        # the store asks for the same sentences' retrieval vectors right after extracting
+        # them: keeping them saves the second encoder pass, half of a full ingest
+        recent = getattr(self, "_recent", None)
+        if recent is None or len(recent) > _RECENT_MAX:
+            recent = self._recent = {}
+        for t, row in zip(texts, unit.numpy()):
+            recent[(lang, t)] = row
+        return mat.to(self.device)
 
     def encode_batch(self, texts: list, lang: str = "eng_Latn"):
         """Sentence embeddings for retrieval: [N, 1024] float16, L2-normalized, in order."""
+        recent = getattr(self, "_recent", None) or {}
+        if texts and all((lang, t) in recent for t in texts):
+            rows = np.stack([recent[(lang, t)] for t in texts]).astype(np.float16)
+            for t in texts:
+                recent.pop((lang, t), None)
+            return rows
         rows = []
         for i in range(0, len(texts), _ENC_BATCH):
             rows.append(self.encoder.encode(texts[i:i + _ENC_BATCH], lang,

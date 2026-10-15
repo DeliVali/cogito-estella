@@ -11,7 +11,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,6 +51,7 @@ _CAPS = re.compile(r"\b[A-Z][\w'\-]*(?:\s+(?:of|the|de|and|&)?\s*[A-Z][\w'\-]*)*
 CODE_NEIGHBORS = 2              # lines after a code hit pulled up with it
 # a sentence ending here is cut mid-sentence: the splitter joins it to the next one
 _ABBREV_END = re.compile(r"(?:\bet al|\be\.g|\bi\.e|\bFig|\bTab|\bEq|\bvs|\bcf|\bSec|\bNo)\.[\],)]*$")
+VECTOR_ONLY_BELOW = 0.5        # share of question words in the corpus under which vectors rank alone
 LOW_CONFIDENCE = 0.3            # learned p= under which the reply probably misses the answer
 ASK_STYLES = ("full", "compact")
 # compact replies speak plain language at the point of use: a small model follows a line
@@ -126,6 +127,36 @@ class TextOnlyExtractor:
 
     def extract_batch_with_provenance(self, texts, doc_offsets=None):
         return [[] for _ in texts]
+
+
+LONG_SENTENCE = 150             # tokens above which a lite "sentence" is cut into pieces
+CHUNK = 80                      # target tokens of each piece
+
+
+def _chunks(sentence: str) -> list[str]:
+    """A sentence over LONG_SENTENCE tokens in pieces of about CHUNK tokens, cut at spaces
+    where the script has them and between characters where it does not. Counted in tokens,
+    not characters: a Thai or Chinese character costs several times an English one, and a
+    piece that outgrows the reply budget is dropped whole."""
+    if len(sentence) < 2 * LONG_SENTENCE or ntok(sentence) <= LONG_SENTENCE:
+        return [sentence]
+    width = max(1, len(sentence) * CHUNK // ntok(sentence))   # chars per piece, this text
+    out, cur = [], ""
+    for word in sentence.split(" "):
+        while len(word) > width:                   # an unspaced run longer than a piece
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(word[:width])
+            word = word[width:]
+        if cur and len(cur) + 1 + len(word) > width:
+            out.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}" if cur else word
+    if cur:
+        out.append(cur)
+    return out
 
 
 def _full_line(src: str, si: int, text: str) -> str:
@@ -416,6 +447,8 @@ class GraphStore:
             nlp = self.extractor._scanner()
         sents = ([s.text.strip() for s in nlp(text).sents] if nlp
                  else [s.strip() for s in re.split(r"(?<=[.!?])\s+", text)])
+        if getattr(self.extractor, "lite", False):     # Thai and similar end sentences
+            sents = [c for s in sents for c in _chunks(s)]   # with a space, not a stop
         out, cursor = [], 0
         for s in sents:
             if not s:
@@ -440,6 +473,12 @@ class GraphStore:
                 if "sections" not in prev:         # indexed before sections existed: the
                     prev["sections"] = _sections(source,  # text and offsets are enough, no
                         text, [o for _, o in prev["sents"]])   # extraction runs again
+                    if save:
+                        self.save()
+                if (self._ex is not None or self._factory is not None) and source not in \
+                        self.emb and is_prose(source) and getattr(self.extractor, "vectors", False):      # indexed before vectors: add them once
+                    self._embed_source(self.extractor, source, [t for t, _ in prev["sents"]])
+                    self._invalidate_index()
                     if save:
                         self.save()
                 return IngestResult(source, "unchanged", prev["sentences"], 0, prev["tokens"],
@@ -886,6 +925,9 @@ class GraphStore:
         lexical = lex.score(question, snap.boost)
         if requested == "lexical" or not lex.n:
             return lexical, "lexical", None
+        if requested == "learned" and snap.mat is not None \
+                and getattr(self.extractor, "vectors", False):
+            return self._interleaved(question, lex, lexical, snap, budget)
         if requested == "learned":
             learned, conf = self._learned_scores(question, lex, lexical, snap, budget)
             return (learned, "learned", conf) if learned is not None \
@@ -905,6 +947,28 @@ class GraphStore:
                 out.append(DENSE_OFFSET + sonar[i] if sonar[i] >= DENSE_FLOOR else 0.0)
         return out, f"dense{snap.cover}", None
 
+    def _interleaved(self, question, lex, lexical, snap, budget):
+        """`--multilingual`: the learned lexical order and the vector order taken in turns,
+        or the vector order alone when few question words occur in the corpus (another
+        language). XQuAD, against either ranking alone: Thai 63.4 % (vectors 52.4, lexical
+        62.9), Arabic 82.2 (81.7, 71.9); Spanish over English text 95.7 (lexical 43)."""
+        dense, _, _ = self._score_sentences(question, lex, snap, "dense", budget)
+        q = set(tokenize(question))
+        if sum(t in lex.df for t in q) < VECTOR_ONLY_BELOW * max(1, len(q)):
+            return dense, "vectors", None
+        plain = replace(snap, mat=None, mask=None)    # the scorer was fitted
+        learned, _ = self._learned_scores(question, lex, lexical, plain, budget)  # without e5
+        if learned is None:
+            learned = lexical
+        n = len(dense)
+        by_learned = {i: r for r, i in enumerate(rank(learned, n))}
+        by_dense = {i: r for r, i in enumerate(rank(dense, n))}
+        out = []
+        for i in range(n):
+            a = by_learned[i] if learned[i] > 0 else n
+            out.append(1.0 / (1 + min(a, by_dense[i])) + 1e-6 / (1 + max(a, by_dense[i])))
+        return out, "interleaved", None
+
     def _encode_question(self, question, width=None):
         """The question as a flat row, or None when no encoder answers for it or its width
         does not match the stored rows: a mismatched product is a crash, not a ranking."""
@@ -912,7 +976,8 @@ class GraphStore:
             return None
         try:
             with _quiet():                         # stdout is the MCP wire
-                q = np.asarray(self.extractor.encode_batch([question]), dtype=np.float32)
+                encode = getattr(self.extractor, "encode_query", self.extractor.encode_batch)
+                q = np.asarray(encode([question]), dtype=np.float32)
         except Exception as exc:                   # noqa: BLE001 - a missing encoder is a fallback
             print(f"cogito-mcp: question encoding failed ({exc}); ask ranks lexically",
                   file=sys.stderr)

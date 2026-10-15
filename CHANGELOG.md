@@ -2,7 +2,7 @@
 
 Format: [Keep a Changelog 1.1](https://keepachangelog.com/) · Versioning: [SemVer 2.0.0](https://semver.org/).
 
-## [Unreleased]
+## [0.20.0] - 2026-10-15
 
 ### Added
 - **Full ingest 1.7x faster, same graph.** The encoder ran twice over each sentence, once for the graph heads and once for the retrieval vector; the second pass now reuses the first (identical vectors and facts: 119 of 119 on 30 XQuAD paragraphs, 132 → 220 tokens/s on 4 CPU cores). An int8 encoder was 1.5x faster again but changed a fifth of the facts, so it does not ship without a graph-quality measure.

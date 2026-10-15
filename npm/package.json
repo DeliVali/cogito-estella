@@ -1,6 +1,6 @@
 {
   "name": "cogito-estella",
-  "version": "0.19.4",
+  "version": "0.20.0",
   "description": "Launcher for the Cogito Estella MCP server: npx cogito-estella docs/",
   "license": "Apache-2.0",
   "author": "Jeffrey Romero Del Val <delvaljeffrey@gmail.com>",

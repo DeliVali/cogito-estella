@@ -1,4 +1,4 @@
-# Cogito Estella (v0.20.0)
+# Cogito Estella (v0.20.1)
 
 [![CI](https://github.com/DeliVali/cogito-estella/actions/workflows/ci.yml/badge.svg)](https://github.com/DeliVali/cogito-estella/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/cogito-estella)](https://pypi.org/project/cogito-estella/)

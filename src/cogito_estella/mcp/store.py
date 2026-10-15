@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from cogito_estella.mcp.rank import LexicalScorer, SonarScorer, rank, singular_forms, tokenize
+from cogito_estella.mcp.readers import is_prose
 from cogito_estella.mcp.rerank import (
     FeatureContext,
     bigrams,
@@ -44,6 +45,10 @@ DENSE_FLOOR = (DENSE_COS_FLOOR + 1.0) / 2.0        # the same floor on the score
 DENSE_OFFSET = 1.0              # embedded rows rank above lexical ones: no shared origin
 NEIGHBOR_TOP = 2                # best sentences whose successor is pulled up with them
 NEIGHBOR_WEIGHT = 0.9           # successor score as a share of its predecessor's
+HOP_LINES = 2                   # best prose lines whose new names start a second search
+HOP_NAMES = 4                   # names carried into it
+_CAPS = re.compile(r"\b[A-Z][\w'\-]*(?:\s+(?:of|the|de|and|&)?\s*[A-Z][\w'\-]*)*")
+CODE_NEIGHBORS = 2              # lines after a code hit pulled up with it
 # a sentence ending here is cut mid-sentence: the splitter joins it to the next one
 _ABBREV_END = re.compile(r"(?:\bet al|\be\.g|\bi\.e|\bFig|\bTab|\bEq|\bvs|\bcf|\bSec|\bNo)\.[\],)]*$")
 LOW_CONFIDENCE = 0.3            # learned p= under which the reply probably misses the answer
@@ -257,6 +262,48 @@ class _AskSnapshot:
         return si / max(self.doc_sents.get(src, 1) - 1, 1)
 
 
+def _line_source(line: str) -> str:
+    """`[file § section] text` -> file."""
+    return line[1:].split("]", 1)[0].split(" § ", 1)[0]
+
+
+def _norm_words(s: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", s.lower()))
+
+
+def _code_graph(text: str, source: str, offsets: list[int], n: int) -> list[list[dict]]:
+    """Syntax edges of a code file grouped by line, the shape the extraction loop yields."""
+    from cogito_estella.mcp import codegraph
+    per: list[list[dict]] = [[] for _ in range(n)]
+    for e in codegraph.extract(text, source, offsets):
+        per[e.pop("sent_idx")].append(e)
+    return per
+
+
+def _rebuild(sents: list) -> str:
+    """Stored lines back at their offsets: each line keeps its column, which Python's
+    indentation-based syntax needs to parse again."""
+    out, end = [], 0
+    for s, o in sents:
+        if o > end:
+            out.append("\n" + " " * (o - end - 1) if end else " " * o)
+        out.append(s)
+        end = o + len(s)
+    return "".join(out)
+
+
+def _sections(source: str, text: str, offsets: list[int]) -> list[str]:
+    """Heading paths for prose; a code file has none (`# comment` is not a heading)."""
+    return section_paths(text, offsets) if is_prose(source) else [""] * len(offsets)
+
+
+def _code_terms(line: str, path: str) -> str:
+    """What a code line is searched by: its text, its identifiers split at camelCase and
+    snake_case boundaries (`timeoutSeconds` -> timeout seconds) and its file path words."""
+    parts = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", line)
+    return f"{line} {re.sub(r'[^A-Za-z0-9]+', ' ', parts)} {re.sub(r'[^A-Za-z0-9]+', ' ', path)}"
+
+
 def _pull_up_successors(scores, keys):
     """The sentence after each of the best ones scores just below it: an answer often sits in
     the next sentence, which opens with a pronoun and shares no word with the question."""
@@ -266,9 +313,12 @@ def _pull_up_successors(scores, keys):
     for i in top:
         if scores[i] <= 0:
             break
-        j = where.get((keys[i][0], keys[i][1] + 1))
-        if j is not None:
-            out[j] = max(out[j], NEIGHBOR_WEIGHT * scores[i])
+        # a code line is often a comment or a name whose value sits on the next lines
+        reach = 1 if is_prose(keys[i][0]) else CODE_NEIGHBORS
+        for d in range(1, reach + 1):
+            j = where.get((keys[i][0], keys[i][1] + d))
+            if j is not None:
+                out[j] = max(out[j], NEIGHBOR_WEIGHT ** d * scores[i])
     return out
 
 
@@ -354,9 +404,12 @@ class GraphStore:
         texts = [s for s, _ in sents]
         offsets = [o for _, o in sents]
         ex = self._ex
+        prose = is_prose(source)
         recs_per: list[list[dict]] = []
+        if not prose:
+            recs_per = _code_graph(_rebuild(sents), source, offsets, len(texts))
         with _quiet():
-            for i in range(0, len(texts), BATCH):
+            for i in range(0, len(texts) if prose else 0, BATCH):
                 recs_per.extend(ex.extract_batch_with_provenance(
                     texts[i:i + BATCH], doc_offsets=offsets[i:i + BATCH]))
         for k, recs in enumerate(recs_per):
@@ -365,12 +418,21 @@ class GraphStore:
                 rec.update(id=self.next_id, source=source, sent_idx=k)
                 self._add_edge(rec)
         prev.pop("lite", None)
-        self._embed_source(ex, source, texts)
+        if prose:
+            self._embed_source(ex, source, texts)
         self._invalidate_index()
 
     # -- ingestion -----------------------------------------------------------
-    def split(self, text: str) -> list[tuple[str, int]]:
-        """(sentence, absolute char offset) pairs; regex fallback without spaCy."""
+    def split(self, text: str, by_line: bool = False) -> list[tuple[str, int]]:
+        """(sentence, absolute char offset) pairs; regex fallback without spaCy. Code and
+        config are split by line: a sentence splitter reads a whole file as one sentence."""
+        if by_line:
+            out, cursor = [], 0
+            for line in text.splitlines(keepends=True):
+                if line.strip():
+                    out.append((line.strip(), cursor + len(line) - len(line.lstrip())))
+                cursor += len(line)
+            return out
         with _quiet():                             # the first scan may load spaCy
             nlp = self.extractor._scanner()
         sents = ([s.text.strip() for s in nlp(text).sents] if nlp
@@ -399,7 +461,7 @@ class GraphStore:
                                                                        False)
             if prev and prev["sha256"] == digest and not upgrade:
                 if "sections" not in prev:         # indexed before sections existed: the
-                    prev["sections"] = section_paths(  # text and offsets are enough, no
+                    prev["sections"] = _sections(source,  # text and offsets are enough, no
                         text, [o for _, o in prev["sents"]])   # extraction runs again
                     if save:
                         self.save()
@@ -409,12 +471,17 @@ class GraphStore:
             if prev:
                 self.drop_source(source)
             ex = self.extractor
-            sents = self.split(text)
+            # the graph heads and the encoder were trained on prose: on code lines they add
+            # wrong facts and a cosine that misleads the ranking (22/30 against 29/30 lite)
+            prose = is_prose(source)
+            sents = self.split(text, by_line=not prose)
             texts = [s for s, _ in sents]
             offsets = [o for _, o in sents]
             recs_per: list[list[dict]] = []
+            if not prose and not getattr(ex, "lite", False):
+                recs_per = _code_graph(text, source, offsets, len(texts))
             with _quiet():
-                for i in range(0, len(texts), BATCH):
+                for i in range(0, len(texts) if prose else 0, BATCH):
                     recs_per.extend(ex.extract_batch_with_provenance(
                         texts[i:i + BATCH], doc_offsets=offsets[i:i + BATCH]))
             n_new = 0
@@ -426,10 +493,11 @@ class GraphStore:
                     n_new += 1
             raw = ntok(text)
             self.docs[source] = {"sha256": digest, "tokens": raw, "sentences": len(sents),
-                                 "sents": sents, "sections": section_paths(text, offsets)}
+                                 "sents": sents, "sections": _sections(source, text, offsets)}
             if getattr(ex, "lite", False):
                 self.docs[source]["lite"] = True
-            self._embed_source(ex, source, texts)
+            if prose:
+                self._embed_source(ex, source, texts)
             self._invalidate_index()
             self._sync_raw_tokens()
             graph_tok = ntok(self.render_edges(
@@ -455,7 +523,7 @@ class GraphStore:
                     out.append(self.ingest_text(item, name, save=False))
             if not out:
                 out.append(f"source={path} error=no supported documents "
-                           "(txt, md, html, htm, pdf)")
+                           "(text files, html, pdf)")
             if save:
                 self.save()
         return out
@@ -546,7 +614,11 @@ class GraphStore:
         """IDF over the whole universe: built once per corpus, not once per question."""
         with self._lock:
             if self._lex is None:
-                self._lex = LexicalScorer(self.sentence_index()[0])
+                texts, keys, _ = self.sentence_index()
+                # a code line rarely names its file ("which port does the Dockerfile expose?"):
+                # its path words count as its own for matching, never for display
+                self._lex = LexicalScorer([t if is_prose(k[0]) else _code_terms(t, k[0])
+                                           for t, k in zip(texts, keys)])
             return self._lex
 
     def sentence_index(self) -> tuple[list, list, dict]:
@@ -592,16 +664,21 @@ class GraphStore:
 
     # -- retrieval ----------------------------------------------------------------
     def resolve(self, name: str) -> str | None:
+        if name.strip() in self.adj:             # code keeps case: `Pay` the class, `pay` the method
+            return name.strip()
         q = name.strip().lower()
         if not q:
             return None
         if q in self.adj:
             return q
+        same = [e for e in self.adj if e.lower() == q]
+        if same:
+            return max(same, key=lambda e: len(self.adj[e]))
         if len(q) < 2:               # too short for prefix/substring/plural guessing
             return None
         cands = [e for e in self.adj
-                 if e.startswith(q) or (len(e) >= 3 and q.startswith(e))
-                 or (len(q) >= 4 and q in e)]
+                 if e.lower().startswith(q) or (len(e) >= 3 and q.startswith(e.lower()))
+                 or (len(q) >= 4 and q in e.lower())]
         if not cands and q.endswith("s"):
             return self.resolve(q[:-1])
         return max(cands, key=lambda e: len(self.adj[e])) if cands else None
@@ -708,7 +785,45 @@ class GraphStore:
         text, conf = self._ask(question, budget, scorer, "compact")
         if widen_to and widen_to > budget and conf is not None and conf < LOW_CONFIDENCE:
             text, _ = self._ask(question, widen_to, scorer, "compact")
-        return text
+        return self._second_hop(question, text, scorer)
+
+    def _second_hop(self, question: str, text: str, scorer: str) -> str:
+        """Bridge questions ("the producer of the film scored by X") name one entity and
+        need a passage about another: the names the best prose lines bring in are asked
+        again, and both replies interleave within the first one's size. HotpotQA, 200
+        questions not used to choose it: the answer reaches the reply 151 times instead
+        of 136; papers unchanged, code worse (18 to 16 of 30), so code replies keep one hop."""
+        lines = text.split("\n")
+        if any(x.startswith("  ") for x in lines[1:]):     # grouped code: one search only
+            return text
+        head, body = lines[0], [x for x in lines[1:] if x.startswith("[")]
+        top = body[:HOP_LINES]
+        if not top or head.startswith(COMPACT_WHOLE.split("{")[0]) or not all(is_prose(_line_source(x)) for x in top):
+            return text
+        asked = _norm_words(question)
+        names: list[str] = []
+        for line in top:
+            for m in _CAPS.findall(line.split("] ", 1)[-1]):
+                if len(m) > 2 and _norm_words(m) and not _norm_words(m) <= asked \
+                        and m not in names:
+                    names.append(m)
+        if not names:
+            return text
+        second, _ = self._ask(" ".join(names[:HOP_NAMES]) + " " + question,
+                              ASK_BUDGET, scorer, "compact")
+        more = [x for x in second.split("\n")[1:] if x.startswith("[")]
+        merged, seen = [], set()
+        for pair in zip(body + [None] * len(more), more + [None] * len(body)):
+            for x in pair:
+                if x and x not in seen:
+                    seen.add(x)
+                    merged.append(x)
+        cap, out = ntok(text), [head]
+        for x in merged:
+            if ntok("\n".join([*out, x])) > cap:
+                break
+            out.append(x)
+        return "\n".join(out)
 
     def _ask(self, question, budget, scorer, style) -> tuple[str, float | None]:
         requested = str(scorer).strip().lower()
@@ -732,9 +847,7 @@ class GraphStore:
                 return whole, None
             low = conf is not None and conf < LOW_CONFIDENCE
             body = [COMPACT_LOW if low else COMPACT_HEAD]
-            sents = self._sentence_lines(
-                snap.texts, snap.keys, scores, body, budget, sep=[],
-                fmt=lambda src, si, text: _compact_line(src, text, snap.section((src, si))))
+            sents = self._compact_lines(snap, scores, body, budget)
             return ("\n".join(body + sents) if sents else COMPACT_NONE), conf
         mark = f" · p={conf:.2f}" if conf is not None else ""
         head = (f"entities: {', '.join(snap.ents) or '(none)'}{mark} · scorer={name}")
@@ -771,9 +884,10 @@ class GraphStore:
                     if e["id"] not in seen:
                         seen.add(e["id"])
                         edges.append(e)
-            # every retrieved fact boosts its own sentence, whether or not the line survives
+            # every retrieved fact boosts its own sentence, whether or not the line survives;
+            # code facts do not: a name like `pay` sits on dozens of lines (15/30 against 18/30)
             boost = {pos[(e["source"], e["sent_idx"])] for e in edges
-                     if (e["source"], e["sent_idx"]) in pos}
+                     if (e["source"], e["sent_idx"]) in pos and e.get("pattern") != "syntax"}
             mat, mask = self._embedding_matrix(keys) if dense else (None, None)
             snap = _AskSnapshot(texts=texts, keys=keys, ents=ents, boost=boost, mat=mat,
                                 mask=mask, cover=self._embedded_note(),
@@ -977,6 +1091,53 @@ class GraphStore:
             seen.add(texts[i])
             out.append(line)
         return out
+
+    def _compact_lines(self, snap, scores, body, budget) -> list[str]:
+        """Compact reply lines. Prose keeps one tagged line per sentence; code lines are
+        grouped under their file, once, in file order: on code the repeated tag was 40 %
+        of a reply."""
+        picked: list[int] = []
+        seen: set[str] = set()
+        skips = 0
+        for i in rank(scores):
+            if scores[i] <= 0:
+                break
+            if snap.texts[i] in seen:
+                continue
+            trial = self._render_compact(snap, [*picked, i])
+            if ntok("\n".join(body + trial)) > budget:
+                skips += 1
+                if skips >= ASK_MAX_SKIPS:
+                    break
+                continue
+            skips = 0
+            seen.add(snap.texts[i])
+            picked.append(i)
+        return self._render_compact(snap, picked)
+
+    @staticmethod
+    def _render_compact(snap, picked: list[int]) -> list[str]:
+        groups: dict[str, list[int]] = {}
+        out: list[object] = []                     # a prose line, or a code file's group key
+        for i in picked:
+            src, si = snap.keys[i]
+            if is_prose(src):
+                out.append(_compact_line(src, snap.texts[i], snap.section((src, si))))
+            else:
+                if src not in groups:
+                    groups[src] = []
+                    out.append(("code", src))
+                groups[src].append(i)
+        lines: list[str] = []
+        for item in out:
+            if isinstance(item, str):
+                lines.append(item)
+                continue
+            src = item[1]
+            lines.append(f"[{src}]")
+            lines.extend(f"  {' '.join(snap.texts[i].split())}"
+                         for i in sorted(groups[src], key=lambda i: snap.keys[i][1]))
+        return lines
 
     def stats(self) -> str:
         L = self.ledger

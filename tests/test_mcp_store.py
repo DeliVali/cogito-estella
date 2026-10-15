@@ -163,7 +163,7 @@ def test_ingest_path_nested_directory_sorted_order(tmp_path, fake_extractor):
     (tmp_path / "a.txt").write_text("The encoder maps text to a vector.")
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "b.md").write_text("The encoder maps text to a vector.")
-    (tmp_path / "sub" / "c.py").write_text("print(1)")
+    (tmp_path / "sub" / "c.bin").write_bytes(b"\x00\x01")
     st = GraphStore(extractor=fake_extractor(
         {"The encoder maps text to a vector.": [("encoder", "give", "text")]}))
     out = st.ingest_path(tmp_path)

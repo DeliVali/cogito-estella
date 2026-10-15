@@ -8,19 +8,24 @@ import importlib.util
 from argparse import Namespace
 from pathlib import Path
 
-from cogito_estella.mcp.server import ASK_BUDGET_MAX, CONTEXT_TEMPLATE, DEFAULT_SCORER
+from cogito_estella.mcp.server import (
+    ASK_BUDGET_MAX,
+    CONTEXT_TEMPLATE,
+    DEFAULT_BUDGET,
+    DEFAULT_SCORER,
+)
 from cogito_estella.mcp.store import GraphStore, TextOnlyExtractor
 
 
 class Estella:
     """Documents indexed for questions.
 
-    `Estella("docs/", "notes.md")` indexes files or directories (txt, md, html, pdf) with
+    `Estella("docs/", "notes.md")` indexes files or directories (any text file, html, pdf) with
     the lite index: spaCy only, ready in seconds. `full=True` loads the graph model instead
     (needs `pip install 'cogito-estella[full]'`). `save_to=".cogito"` keeps the index on
     disk so the next run does not index unchanged files again."""
 
-    def __init__(self, *paths, full: bool = False, budget: int = 600,
+    def __init__(self, *paths, full: bool = False, budget: int = DEFAULT_BUDGET,
                  save_to: str | Path | None = None):
         if full:
             from cogito_estella.mcp.server import build_extractor

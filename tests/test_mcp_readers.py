@@ -3,7 +3,7 @@ import builtins
 
 import pytest
 
-from cogito_estella.mcp.readers import ReaderError, html_to_text, read_source
+from cogito_estella.mcp.readers import ReaderError, html_to_text, iter_sources, read_source
 from cogito_estella.mcp.store import GraphStore
 
 HTML = """<html><body><nav>Report issue</nav>
@@ -177,3 +177,72 @@ def test_project_config_folders_are_walked(tmp_path):
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / ".github" / "workflows" / "ci.yml").write_text("on: push\n")
     assert [n for n, _ in read_source(tmp_path)] == [".github/workflows/ci.yml"]
+
+
+def _zip(path, members):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        for name, data in members.items():
+            z.writestr(name, data)
+
+
+W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+A = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+
+
+def test_office_documents_are_read(tmp_path):
+    _zip(tmp_path / "a.docx", {"word/document.xml":
+         f'<w:document {W}><w:body><w:p><w:r><w:t>Call sign </w:t></w:r><w:r><w:t>KESTREL-9.'
+         f'</w:t></w:r></w:p><w:p><w:r><w:t>Second</w:t><w:tab/><w:t>line</w:t></w:r></w:p>'
+         '</w:body></w:document>'})
+    _zip(tmp_path / "b.pptx", {f"ppt/slides/slide{i}.xml":
+         f'<p:sld xmlns:p="p" {A}><a:p><a:r><a:t>Slide {i}</a:t></a:r></a:p></p:sld>'
+         for i in (2, 10, 1)})
+    _zip(tmp_path / "c.xlsx", {
+        "xl/sharedStrings.xml": '<sst xmlns="s"><si><t>engineer</t></si><si><t>Quito</t></si></sst>',
+        "xl/worksheets/sheet1.xml": '<worksheet xmlns="s"><sheetData><row><c t="s"><v>0</v></c>'
+                                    '<c t="s"><v>1</v></c><c><v>2031</v></c></row></sheetData>'
+                                    '</worksheet>'})
+    _zip(tmp_path / "d.odt", {"content.xml":
+         '<office:document-content xmlns:office="o" xmlns:text="t"><office:body><office:text>'
+         '<text:h>Notes</text:h><text:p>Antenna <text:span>4.2 m</text:span></text:p>'
+         '</office:text></office:body></office:document-content>'})
+    (tmp_path / "f.rtf").write_text(r"{\rtf1\ansi{\fonttbl{\f0 Arial;}}\f0 Halvorsen\par caf\'e9}")
+    (tmp_path / "h.ipynb").write_text('{"cells": [{"source": ["# T\\n", "six years"]}, '
+                                      '{"source": "x = 42"}]}')
+    got = dict(read_source(tmp_path))
+    assert got["a.docx"] == "Call sign KESTREL-9.\nSecond line"
+    assert got["b.pptx"] == "Slide 1\n\nSlide 2\n\nSlide 10"
+    assert got["c.xlsx"] == "engineer | Quito | 2031"
+    assert got["d.odt"] == "Notes\nAntenna 4.2 m"
+    assert got["f.rtf"] == "Halvorsen\ncafé"
+    assert got["h.ipynb"] == "# T\nsix years\n\nx = 42"
+
+
+def test_epub_follows_the_spine(tmp_path):
+    _zip(tmp_path / "e.epub", {
+        "META-INF/container.xml": '<container xmlns="c"><rootfiles><rootfile full-path="OEBPS/c.opf"/>'
+                                  '</rootfiles></container>',
+        "OEBPS/c.opf": '<package xmlns="o"><manifest><item id="b" href="b.xhtml"/>'
+                       '<item id="a" href="a.xhtml"/></manifest><spine><itemref idref="a"/>'
+                       '<itemref idref="b"/></spine></package>',
+        "OEBPS/a.xhtml": "<html><body><p>First chapter.</p></body></html>",
+        "OEBPS/b.xhtml": "<html><body><p>Second chapter.</p></body></html>"})
+    assert dict(read_source(tmp_path))["e.epub"] == "First chapter.\n\nSecond chapter."
+
+
+def test_email_keeps_its_headers_and_body(tmp_path):
+    from email.message import EmailMessage
+    m = EmailMessage()
+    m["Subject"] = "Launch date"
+    m.set_content("Launch is set for 14 March.")
+    (tmp_path / "g.eml").write_bytes(bytes(m))
+    assert dict(read_source(tmp_path))["g.eml"] == "Subject: Launch date\n\nLaunch is set for 14 March."
+
+
+def test_legacy_and_broken_office_files_report_an_error(tmp_path):
+    (tmp_path / "old.doc").write_bytes(b"\xd0\xcf\x11\xe0binary")
+    (tmp_path / "bad.docx").write_bytes(b"not a zip")
+    got = dict(iter_sources(tmp_path))
+    assert "save it as .docx" in str(got["old.doc"])
+    assert "cannot read bad.docx" in str(got["bad.docx"])

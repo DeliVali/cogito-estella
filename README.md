@@ -82,7 +82,7 @@ directory to `.gitignore`.
 
 ## Tools
 
-- `ingest(path_or_text)` — a file, a directory (txt/md/html/pdf) or raw text. Documents
+- `ingest(path_or_text)` — a file, a directory (any text file or code; html, pdf, Word, PowerPoint, Excel, OpenDocument, EPUB, RTF, email, notebooks) or raw text. Documents
   are deduplicated by content hash and replaced when they change.
 - `ask(question, budget=600, use_dense=False)` — start here. The graph facts for the
   entities in the question, a `--` line, then the source sentences that answer it, within

@@ -771,6 +771,8 @@ class GraphStore:
         questions not used to choose it: the answer reaches the reply 151 times instead
         of 136; papers unchanged, code worse (18 to 16 of 30), so code replies keep one hop."""
         lines = text.split("\n")
+        if any(x.startswith("  ") for x in lines[1:]):     # grouped code: one search only
+            return text
         head, body = lines[0], [x for x in lines[1:] if x.startswith("[")]
         top = body[:HOP_LINES]
         if not top or head.startswith(COMPACT_WHOLE.split("{")[0]) or not all(is_prose(_line_source(x)) for x in top):
@@ -822,9 +824,7 @@ class GraphStore:
                 return whole, None
             low = conf is not None and conf < LOW_CONFIDENCE
             body = [COMPACT_LOW if low else COMPACT_HEAD]
-            sents = self._sentence_lines(
-                snap.texts, snap.keys, scores, body, budget, sep=[],
-                fmt=lambda src, si, text: _compact_line(src, text, snap.section((src, si))))
+            sents = self._compact_lines(snap, scores, body, budget)
             return ("\n".join(body + sents) if sents else COMPACT_NONE), conf
         mark = f" · p={conf:.2f}" if conf is not None else ""
         head = (f"entities: {', '.join(snap.ents) or '(none)'}{mark} · scorer={name}")
@@ -1068,6 +1068,53 @@ class GraphStore:
             seen.add(texts[i])
             out.append(line)
         return out
+
+    def _compact_lines(self, snap, scores, body, budget) -> list[str]:
+        """Compact reply lines. Prose keeps one tagged line per sentence; code lines are
+        grouped under their file, once, in file order: on code the repeated tag was 40 %
+        of a reply."""
+        picked: list[int] = []
+        seen: set[str] = set()
+        skips = 0
+        for i in rank(scores):
+            if scores[i] <= 0:
+                break
+            if snap.texts[i] in seen:
+                continue
+            trial = self._render_compact(snap, [*picked, i])
+            if ntok("\n".join(body + trial)) > budget:
+                skips += 1
+                if skips >= ASK_MAX_SKIPS:
+                    break
+                continue
+            skips = 0
+            seen.add(snap.texts[i])
+            picked.append(i)
+        return self._render_compact(snap, picked)
+
+    @staticmethod
+    def _render_compact(snap, picked: list[int]) -> list[str]:
+        groups: dict[str, list[int]] = {}
+        out: list[object] = []                     # a prose line, or a code file's group key
+        for i in picked:
+            src, si = snap.keys[i]
+            if is_prose(src):
+                out.append(_compact_line(src, snap.texts[i], snap.section((src, si))))
+            else:
+                if src not in groups:
+                    groups[src] = []
+                    out.append(("code", src))
+                groups[src].append(i)
+        lines: list[str] = []
+        for item in out:
+            if isinstance(item, str):
+                lines.append(item)
+                continue
+            src = item[1]
+            lines.append(f"[{src}]")
+            lines.extend(f"  {' '.join(snap.texts[i].split())}"
+                         for i in sorted(groups[src], key=lambda i: snap.keys[i][1]))
+        return lines
 
     def stats(self) -> str:
         L = self.ledger

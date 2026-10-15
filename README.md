@@ -194,6 +194,21 @@ tool, so `context` is its only route.
 Graph extraction on prose: Triple F1 0.852 for the default three-head ensemble, on
 held-out sentences whose entity and relation combinations never appeared in training.
 
+## Stable API
+
+From 1.0 these follow semantic versioning: removing or renaming any of them needs a
+new major version, while additions come in minor versions.
+
+- Python: `Estella(*paths, full=False, budget=300, save_to=None)` with `add`, `ask`,
+  `context` and `deep`.
+- Commands: `cogito-estella setup|ask|context` and the `cogito-mcp` flags listed under
+  Tools.
+- MCP: the tools and their parameters, the `context` prompt, and `POST /ask`,
+  `POST /context` and `GET /health` under `--http`.
+
+Everything else (`cogito_estella.mcp.*` internals, the training modules, the index files
+under `.cogito/`) can change in any release.
+
 ## Python and Neo4j
 
 ```python
